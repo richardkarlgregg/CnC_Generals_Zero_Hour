@@ -1,0 +1,4535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C&amp;C Generals — Map Viewer</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: #0a0a0f;
+  color: #e0e0e0;
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+}
+
+#drop-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center; flex-direction: column;
+  background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
+  transition: opacity 0.4s ease;
+}
+#drop-overlay.hidden { opacity: 0; pointer-events: none; }
+
+#drop-zone {
+  width: 520px; height: 320px;
+  border: 2px dashed #3b82f6;
+  border-radius: 16px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 16px;
+  transition: all 0.3s ease;
+  background: rgba(59, 130, 246, 0.04);
+}
+#drop-zone.drag-over {
+  border-color: #60a5fa;
+  background: rgba(59, 130, 246, 0.12);
+  transform: scale(1.02);
+  box-shadow: 0 0 40px rgba(59, 130, 246, 0.15);
+}
+#drop-zone svg { opacity: 0.5; }
+#drop-zone h2 { font-size: 20px; font-weight: 500; color: #c9d1d9; }
+#drop-zone p { font-size: 13px; color: #8b949e; }
+
+#viewer {
+  position: fixed; inset: 0;
+  display: none;
+}
+#viewer.active { display: block; }
+
+canvas { display: block; width: 100%; height: 100%; cursor: default; }
+
+#panel {
+  position: fixed; top: 12px; right: 12px;
+  width: 280px;
+  background: rgba(13, 17, 23, 0.92);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 16px;
+  font-size: 13px;
+  z-index: 100;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+}
+#panel h3 {
+  font-size: 14px; font-weight: 600; color: #58a6ff;
+  margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+}
+#panel h3 svg { flex-shrink: 0; }
+
+.info-grid {
+  display: grid; grid-template-columns: auto 1fr;
+  gap: 4px 12px; margin-bottom: 16px;
+}
+.info-grid .label { color: #8b949e; white-space: nowrap; }
+.info-grid .value { color: #e6edf3; font-variant-numeric: tabular-nums; text-align: right; }
+
+.divider {
+  height: 1px; background: rgba(255,255,255,0.06);
+  margin: 12px 0;
+}
+
+.control-group { margin-bottom: 12px; }
+.control-group label {
+  display: flex; align-items: center; justify-content: space-between;
+  color: #c9d1d9; cursor: pointer; user-select: none;
+}
+.control-group input[type="range"] {
+  width: 100%; margin-top: 6px;
+  accent-color: #3b82f6;
+}
+.control-group .range-value {
+  font-size: 12px; color: #8b949e; text-align: right; margin-top: 2px;
+}
+
+.toggle {
+  position: relative; width: 36px; height: 20px;
+  background: #30363d; border-radius: 10px;
+  transition: background 0.2s; cursor: pointer; flex-shrink: 0;
+}
+.toggle.active { background: #3b82f6; }
+.toggle::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 16px; height: 16px; background: #fff; border-radius: 50%;
+  transition: transform 0.2s;
+}
+.toggle.active::after { transform: translateX(16px); }
+
+.terrain-legend { margin-top: 8px; }
+.terrain-legend .item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 2px 0; font-size: 12px;
+}
+.terrain-legend .swatch {
+  width: 12px; height: 12px; border-radius: 3px;
+  flex-shrink: 0; border: 1px solid rgba(255,255,255,0.1);
+}
+
+#loading {
+  position: fixed; inset: 0; z-index: 2000;
+  display: none; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.7); backdrop-filter: blur(4px);
+}
+#loading.active { display: flex; }
+#loading .spinner {
+  width: 40px; height: 40px;
+  border: 3px solid rgba(59, 130, 246, 0.2);
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#loading p { margin-top: 16px; color: #c9d1d9; }
+
+#error-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: #da3633; color: #fff; padding: 12px 24px;
+  border-radius: 8px; font-size: 14px; z-index: 3000;
+  opacity: 0; transition: opacity 0.3s;
+  pointer-events: none;
+}
+#error-toast.visible { opacity: 1; pointer-events: auto; }
+
+#toolbar {
+  position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 8px; z-index: 100;
+}
+#toolbar button {
+  background: rgba(13, 17, 23, 0.92);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #c9d1d9; padding: 8px 16px;
+  border-radius: 8px; font-size: 13px;
+  cursor: pointer; transition: all 0.2s;
+}
+#toolbar button:hover { background: rgba(59, 130, 246, 0.15); border-color: rgba(59,130,246,0.3); }
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div id="drop-overlay">
+  <div id="drop-zone">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="1.5">
+      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+    </svg>
+    <h2>Drop a Generals .map file</h2>
+    <p>Drag &amp; drop a .map file — optionally also drop Terrain.big, Textures.big, W3D.big, INI.big</p>
+  </div>
+</div>
+
+<div id="viewer">
+  <canvas id="canvas"></canvas>
+</div>
+
+<div id="panel" style="display:none">
+  <h3>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <polygon points="1 6 12 2 23 6 23 18 12 22 1 18"/>
+      <line x1="12" y1="2" x2="12" y2="22"/>
+    </svg>
+    <span id="map-name">Map Info</span>
+  </h3>
+  <div class="info-grid" id="info-grid"></div>
+  <div class="divider"></div>
+
+  <div class="control-group">
+    <label>Wireframe <div class="toggle" id="toggle-wireframe"></div></label>
+  </div>
+  <div class="control-group">
+    <label>Objects <div class="toggle active" id="toggle-objects"></div></label>
+  </div>
+  <div class="control-group">
+    <label>Water <div class="toggle active" id="toggle-water"></div></label>
+  </div>
+  <div class="control-group">
+    <label>Roads <div class="toggle active" id="toggle-roads"></div></label>
+  </div>
+  <div class="control-group">
+    <label>Shadows <div class="toggle active" id="toggle-shadows"></div></label>
+  </div>
+  <div class="control-group">
+    <label>Edge Scroll <div class="toggle" id="toggle-edge-scroll"></div></label>
+  </div>
+  <div class="control-group">
+    <label>Height Scale</label>
+    <input type="range" id="height-scale" min="0.1" max="5" step="0.1" value="1">
+    <div class="range-value" id="height-scale-value">1.0x</div>
+  </div>
+  <div class="control-group">
+    <label>Color Mode</label>
+    <select id="color-mode" style="background:#21262d;border:1px solid rgba(255,255,255,0.1);color:#c9d1d9;padding:4px 8px;border-radius:6px;margin-top:6px;width:100%;font-size:13px">
+      <option value="texture">Textured (requires Terrain.big)</option>
+      <option value="terrain">Terrain Type</option>
+      <option value="height">Height Gradient</option>
+      <option value="normal">Normal Shading</option>
+    </select>
+  </div>
+  <div class="control-group">
+    <label>Time of Day</label>
+    <select id="time-of-day" style="background:#21262d;border:1px solid rgba(255,255,255,0.1);color:#c9d1d9;padding:4px 8px;border-radius:6px;margin-top:6px;width:100%;font-size:13px">
+      <option value="0">Morning</option>
+      <option value="1" selected>Afternoon</option>
+      <option value="2">Evening</option>
+      <option value="3">Night</option>
+    </select>
+  </div>
+
+  <div class="divider"></div>
+  <div class="terrain-legend" id="terrain-legend"></div>
+</div>
+
+<div id="toolbar" style="display:none">
+  <button id="btn-reset-camera">Reset Camera</button>
+  <button id="btn-load-new">Load Another Map</button>
+  <button id="btn-list-big" style="display:none">List BIG Files</button>
+</div>
+
+<div id="loading">
+  <div style="text-align:center">
+    <div class="spinner"></div>
+    <p>Parsing map file...</p>
+  </div>
+</div>
+
+<div id="error-toast"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ─── RefPack Decompression (ported from EAC/refdecode.cpp) ──────────────
+
+function decompressRefPack(src) {
+  let si = 0;
+  let type = (src[si++] << 8) | src[si++];
+  let largeSizeField = !!(type & 0x8000);
+  let sizeBytes = largeSizeField ? 4 : 3;
+
+  if (type & 0x100) {
+    si += sizeBytes; // skip compressed size field
+  }
+
+  let ulen = 0;
+  if (largeSizeField) {
+    ulen = (src[si++] << 24) | (src[si++] << 16) | (src[si++] << 8) | src[si++];
+  } else {
+    ulen = (src[si++] << 16) | (src[si++] << 8) | src[si++];
+  }
+
+  const dest = new Uint8Array(ulen);
+  let di = 0;
+
+  for (;;) {
+    let first = src[si++];
+
+    if (!(first & 0x80)) {
+      let second = src[si++];
+      let run = first & 3;
+      while (run--) dest[di++] = src[si++];
+      let refOff = di - 1 - (((first & 0x60) << 3) + second);
+      run = ((first & 0x1c) >> 2) + 3 - 1;
+      do { dest[di++] = dest[refOff++]; } while (run--);
+      continue;
+    }
+
+    if (!(first & 0x40)) {
+      let second = src[si++];
+      let third = src[si++];
+      let run = second >> 6;
+      while (run--) dest[di++] = src[si++];
+      let refOff = di - 1 - (((second & 0x3f) << 8) + third);
+      run = (first & 0x3f) + 4 - 1;
+      do { dest[di++] = dest[refOff++]; } while (run--);
+      continue;
+    }
+
+    if (!(first & 0x20)) {
+      let second = src[si++];
+      let third = src[si++];
+      let forth = src[si++];
+      let run = first & 3;
+      while (run--) dest[di++] = src[si++];
+      let refOff = di - 1 - (((first & 0x10) >> 4 << 16) + (second << 8) + third);
+      run = (((first & 0x0c) >> 2 << 8) + forth + 5) - 1;
+      do { dest[di++] = dest[refOff++]; } while (run--);
+      continue;
+    }
+
+    let run = ((first & 0x1f) << 2) + 4;
+    if (run <= 112) {
+      while (run--) dest[di++] = src[si++];
+      continue;
+    }
+
+    run = first & 3;
+    while (run--) dest[di++] = src[si++];
+    break;
+  }
+
+  return dest;
+}
+
+async function tryDecompress(buffer) {
+  const u8 = new Uint8Array(buffer);
+  if (u8.length < 8) return u8;
+
+  const magic = String.fromCharCode(u8[0], u8[1], u8[2], u8[3]);
+
+  if (magic === 'EAR\0') {
+    return decompressRefPack(u8.subarray(8));
+  }
+
+  if (magic.startsWith('ZL') && u8[3] === 0) {
+    try {
+      const compressed = u8.subarray(8);
+      const ds = new DecompressionStream('deflate');
+      const blob = new Blob([compressed]);
+      const stream = blob.stream().pipeThrough(ds);
+      const reader = stream.getReader();
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const totalLen = chunks.reduce((s, c) => s + c.length, 0);
+      const result = new Uint8Array(totalLen);
+      let off = 0;
+      for (const c of chunks) { result.set(c, off); off += c.length; }
+      return result;
+    } catch (e) {
+      showError('Failed to decompress ZLib-compressed map: ' + e.message);
+      return null;
+    }
+  }
+
+  return u8;
+}
+
+// ─── Binary Reader ──────────────────────────────────────────────────────
+
+class BinaryReader {
+  constructor(data) {
+    if (data instanceof Uint8Array) {
+      this.buffer = data.buffer;
+      this.view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      this.bytes = data;
+    } else {
+      this.buffer = data;
+      this.view = new DataView(data);
+      this.bytes = new Uint8Array(data);
+    }
+    this.pos = 0;
+  }
+
+  get eof() { return this.pos >= this.bytes.length; }
+  get remaining() { return this.bytes.length - this.pos; }
+
+  readUInt32() { const v = this.view.getUint32(this.pos, true); this.pos += 4; return v; }
+  readInt32()  { const v = this.view.getInt32(this.pos, true);  this.pos += 4; return v; }
+  readUInt16() { const v = this.view.getUint16(this.pos, true); this.pos += 2; return v; }
+  readInt16()  { const v = this.view.getInt16(this.pos, true);  this.pos += 2; return v; }
+  readFloat32(){ const v = this.view.getFloat32(this.pos, true);this.pos += 4; return v; }
+  readByte()   { return this.bytes[this.pos++]; }
+
+  readBytes(n) {
+    const slice = this.bytes.subarray(this.pos, this.pos + n);
+    this.pos += n;
+    return slice;
+  }
+
+  readInt16Array(count) {
+    const arr = new Int16Array(count);
+    for (let i = 0; i < count; i++) {
+      arr[i] = this.view.getInt16(this.pos, true);
+      this.pos += 2;
+    }
+    return arr;
+  }
+
+  readAsciiString() {
+    const len = this.readUInt16();
+    if (len === 0) return '';
+    const bytes = this.readBytes(len);
+    let str = '';
+    for (let i = 0; i < len; i++) str += String.fromCharCode(bytes[i]);
+    return str;
+  }
+
+  readUnicodeString() {
+    const len = this.readUInt16();
+    if (len === 0) return '';
+    let str = '';
+    for (let i = 0; i < len; i++) {
+      str += String.fromCharCode(this.readUInt16());
+    }
+    return str;
+  }
+
+  readDict(tocNames) {
+    const count = this.readUInt16();
+    const dict = {};
+    for (let i = 0; i < count; i++) {
+      const keyAndType = this.readInt32();
+      const type = keyAndType & 0xff;
+      const nameId = keyAndType >>> 8;
+      const keyName = tocNames[nameId] || `key_${nameId}`;
+      switch (type) {
+        case 1: dict[keyName] = !!this.readByte(); break;      // DICT_BOOL
+        case 2: dict[keyName] = this.readInt32(); break;        // DICT_INT
+        case 3: dict[keyName] = this.readFloat32(); break;      // DICT_REAL
+        case 4: dict[keyName] = this.readAsciiString(); break;  // DICT_ASCIISTRING
+        case 5: dict[keyName] = this.readUnicodeString(); break;// DICT_UNICODESTRING
+        default: throw new Error(`Unknown dict type ${type}`);
+      }
+    }
+    return dict;
+  }
+
+  seek(pos) { this.pos = pos; }
+  skip(n)   { this.pos += n; }
+  tell()    { return this.pos; }
+}
+
+// ─── DataChunk Map Parser ───────────────────────────────────────────────
+
+const MAP_XY_FACTOR = 10.0;
+const MAP_HEIGHT_SCALE = MAP_XY_FACTOR / 16.0;
+
+// Road flags from MapObject.h
+const FLAG_ROAD_POINT1 = 0x02;
+const FLAG_ROAD_POINT2 = 0x04;
+const FLAG_ROAD_FLAGS  = FLAG_ROAD_POINT1 | FLAG_ROAD_POINT2;
+const FLAG_ROAD_CORNER_ANGLED = 0x08;
+const FLAG_ROAD_CORNER_TIGHT  = 0x40;
+const FLAG_ROAD_JOIN   = 0x80;
+const FLAG_BRIDGE_FLAGS = 0x30;
+const DEFAULT_ROAD_SCALE = 8.0;
+const ROAD_FLOAT_AMOUNT = MAP_HEIGHT_SCALE / 8;
+
+function parseMapFile(data) {
+  const reader = new BinaryReader(data);
+
+  // Read TOC header
+  const tag = reader.readBytes(4);
+  if (String.fromCharCode(tag[0], tag[1], tag[2], tag[3]) !== 'CkMp') {
+    throw new Error('Invalid map file: missing CkMp header');
+  }
+
+  // Read TOC entries
+  const tocCount = reader.readInt32();
+  const tocById = {};
+  const tocByName = {};
+
+  for (let i = 0; i < tocCount; i++) {
+    const nameLen = reader.readByte();
+    let name = '';
+    for (let j = 0; j < nameLen; j++) name += String.fromCharCode(reader.readByte());
+    const id = reader.readUInt32();
+    tocById[id] = name;
+    tocByName[name] = id;
+  }
+
+  const mapData = {
+    heightMap: null,
+    blendTileData: null,
+    objects: [],
+    lighting: null,
+    polygonTriggers: [],
+    worldInfo: {},
+  };
+
+  // Parse chunks
+  while (!reader.eof && reader.remaining >= 10) {
+    const chunkId = reader.readUInt32();
+    const chunkVersion = reader.readUInt16();
+    const chunkDataSize = reader.readInt32();
+    const chunkName = tocById[chunkId] || `unknown_${chunkId}`;
+    const chunkStart = reader.tell();
+    const chunkEnd = chunkStart + chunkDataSize;
+
+    try {
+      if (chunkName === 'HeightMapData') {
+        mapData.heightMap = parseHeightMapData(reader, chunkVersion);
+      } else if (chunkName === 'BlendTileData') {
+        mapData.blendTileData = parseBlendTileData(reader, chunkVersion, mapData.heightMap);
+      } else if (chunkName === 'ObjectsList') {
+        parseObjectsList(reader, chunkVersion, chunkEnd, tocById, mapData);
+      } else if (chunkName === 'GlobalLighting') {
+        mapData.lighting = parseLighting(reader, chunkVersion);
+      } else if (chunkName === 'PolygonTriggers') {
+        parsePolygonTriggers(reader, chunkVersion, chunkEnd, mapData);
+      } else if (chunkName === 'WorldInfo') {
+        parseWorldInfo(reader, chunkVersion, chunkEnd, tocById, mapData);
+      }
+    } catch (e) {
+      console.warn(`Error parsing chunk '${chunkName}':`, e);
+    }
+
+    reader.seek(chunkEnd);
+  }
+
+  return mapData;
+}
+
+function parseHeightMapData(reader, version) {
+  const width = reader.readInt32();
+  const height = reader.readInt32();
+  let borderSize = 0;
+  let boundaries = [];
+
+  if (version >= 3) {
+    borderSize = reader.readInt32();
+  }
+
+  if (version >= 4) {
+    const numBorders = reader.readInt32();
+    for (let i = 0; i < numBorders; i++) {
+      boundaries.push({ x: reader.readInt32(), y: reader.readInt32() });
+    }
+  } else {
+    boundaries.push({ x: width - 2 * borderSize, y: height - 2 * borderSize });
+  }
+
+  const dataSize = reader.readInt32();
+  if (dataSize !== width * height) {
+    throw new Error(`Height data size mismatch: ${dataSize} vs ${width}x${height}`);
+  }
+
+  const data = reader.readBytes(dataSize);
+  const heightData = new Uint8Array(dataSize);
+  heightData.set(data);
+
+  return { width, height, borderSize, boundaries, data: heightData };
+}
+
+function parseBlendTileData(reader, version, heightMap) {
+  if (!heightMap) return null;
+  const dataSize = heightMap.width * heightMap.height;
+  const len = reader.readInt32();
+  if (len !== dataSize) {
+    console.warn(`Blend tile data size mismatch: ${len} vs ${dataSize}`);
+  }
+
+  const tileNdxes = reader.readInt16Array(len);
+  const blendTileNdxes = reader.readInt16Array(len);
+
+  let extraBlendTileNdxes = null;
+  if (version >= 6) {
+    extraBlendTileNdxes = reader.readInt16Array(len);
+  }
+
+  let cliffInfoNdxes = null;
+  if (version >= 5) {
+    cliffInfoNdxes = reader.readInt16Array(len);
+  }
+
+  if (version >= 7) {
+    const flipStateWidth = Math.floor((heightMap.width + 1) / 8);
+    const cellCliffStateSize = heightMap.height * flipStateWidth;
+    reader.skip(cellCliffStateSize);
+  }
+
+  const numBitmapTiles = reader.readInt32();
+  const numBlendedTiles = reader.readInt32();
+  let numCliffInfo = 1;
+  if (version >= 5) {
+    numCliffInfo = reader.readInt32();
+  }
+
+  const numTextureClasses = reader.readInt32();
+  const textureClasses = [];
+  for (let i = 0; i < numTextureClasses; i++) {
+    const firstTile = reader.readInt32();
+    const numTiles = reader.readInt32();
+    const width = reader.readInt32();
+    reader.readInt32(); // legacy field
+    const name = reader.readAsciiString();
+    textureClasses.push({ firstTile, numTiles, width, name });
+  }
+
+  let numEdgeTiles = 0;
+  let numEdgeTextureClasses = 0;
+  const edgeTextureClasses = [];
+  if (version >= 4) {
+    numEdgeTiles = reader.readInt32();
+    numEdgeTextureClasses = reader.readInt32();
+    for (let i = 0; i < numEdgeTextureClasses; i++) {
+      const firstTile = reader.readInt32();
+      const numTiles = reader.readInt32();
+      const width = reader.readInt32();
+      const name = reader.readAsciiString();
+      edgeTextureClasses.push({ firstTile, numTiles, width, name });
+    }
+  }
+
+  const FLAG_VAL = 0x7ADA0000;
+  const blendedTiles = [null]; // index 0 is unused
+  for (let i = 1; i < numBlendedTiles; i++) {
+    const blendNdx = reader.readInt32();
+    const horiz = reader.readByte();
+    const vert = reader.readByte();
+    const rightDiagonal = reader.readByte();
+    const leftDiagonal = reader.readByte();
+    const inverted = reader.readByte();
+    let longDiagonal = 0;
+    if (version >= 3) longDiagonal = reader.readByte();
+    let customBlendEdgeClass = -1;
+    if (version >= 4) customBlendEdgeClass = reader.readInt32();
+    const flag = reader.readUInt32();
+    if (flag !== FLAG_VAL) {
+      console.warn(`Blend tile sentinel mismatch at index ${i}: 0x${flag.toString(16)}`);
+    }
+    blendedTiles.push({ blendNdx, horiz, vert, rightDiagonal, leftDiagonal, inverted, longDiagonal, customBlendEdgeClass });
+  }
+
+  // Skip cliff info records (not needed for the viewer)
+  if (version >= 5) {
+    for (let i = 1; i < numCliffInfo; i++) {
+      reader.skip(4 + 8 * 4 + 2); // tileIndex + 8 floats + flip + mutant
+    }
+  }
+
+  return {
+    tileNdxes,
+    blendTileNdxes,
+    extraBlendTileNdxes,
+    numBitmapTiles,
+    numBlendedTiles,
+    blendedTiles,
+    textureClasses,
+    edgeTextureClasses,
+  };
+}
+
+function parseObjectsList(reader, version, chunkEnd, tocById, mapData) {
+  while (reader.tell() < chunkEnd && reader.remaining >= 10) {
+    const subChunkId = reader.readUInt32();
+    const subChunkVersion = reader.readUInt16();
+    const subChunkSize = reader.readInt32();
+    const subChunkName = tocById[subChunkId] || '';
+    const subChunkEnd = reader.tell() + subChunkSize;
+
+    if (subChunkName === 'Object') {
+      try {
+        const obj = parseObject(reader, subChunkVersion, tocById);
+        if (obj) mapData.objects.push(obj);
+      } catch (e) {
+        console.warn('Error parsing object:', e);
+      }
+    }
+
+    reader.seek(subChunkEnd);
+  }
+}
+
+function parseObject(reader, version, tocById) {
+  const x = reader.readFloat32();
+  const y = reader.readFloat32();
+  const z = reader.readFloat32();
+  const angle = reader.readFloat32();
+  const flags = reader.readInt32();
+  const name = reader.readAsciiString();
+
+  let dict = {};
+  if (version >= 2) {
+    try {
+      dict = reader.readDict(tocById);
+    } catch (e) {
+      // dict parsing can be fragile with unknown key types
+    }
+  }
+
+  if (version <= 2) {
+    return { x, y, z: 0, angle, flags, name, dict };
+  }
+  return { x, y, z, angle, flags, name, dict };
+}
+
+function parseLighting(reader, version) {
+  try {
+    const timeOfDay = reader.readInt32();
+
+    function readLightSet() {
+      return {
+        ambient: { r: reader.readFloat32(), g: reader.readFloat32(), b: reader.readFloat32() },
+        diffuse: { r: reader.readFloat32(), g: reader.readFloat32(), b: reader.readFloat32() },
+        lightPos: { x: reader.readFloat32(), y: reader.readFloat32(), z: reader.readFloat32() },
+      };
+    }
+
+    // 4 time-of-day entries (morning, afternoon, evening, night)
+    // Each has 3 terrain lights + 3 object lights
+    const entries = [];
+    for (let i = 0; i < 4; i++) {
+      const terrain0 = readLightSet();
+      const objects0 = readLightSet();
+      let objects1 = null, objects2 = null;
+      let terrain1 = null, terrain2 = null;
+      if (version >= 2) {
+        objects1 = readLightSet();
+        objects2 = readLightSet();
+      }
+      if (version >= 3) {
+        terrain1 = readLightSet();
+        terrain2 = readLightSet();
+      }
+      entries.push({
+        terrainLights: [terrain0, terrain1, terrain2].filter(Boolean),
+        objectLights: [objects0, objects1, objects2].filter(Boolean),
+      });
+    }
+
+    const todIndex = Math.max(0, Math.min(3, (timeOfDay || 1) - 1));
+    return { timeOfDay, todIndex, entries, ...entries[todIndex] };
+  } catch (e) {
+    return null;
+  }
+}
+
+function parsePolygonTriggers(reader, version, chunkEnd, mapData) {
+  try {
+    const count = reader.readInt32();
+    for (let i = 0; i < count && reader.tell() < chunkEnd; i++) {
+      const trigger = {};
+      trigger.name = reader.readAsciiString();
+      trigger.id = reader.readInt32();
+      trigger.isWaterArea = false;
+      trigger.isRiver = false;
+
+      if (version >= 2) {
+        trigger.isWaterArea = !!reader.readByte();
+      }
+      if (version >= 3) {
+        trigger.isRiver = !!reader.readByte();
+        trigger.riverStart = reader.readInt32();
+      }
+
+      const numPoints = reader.readInt32();
+      trigger.points = [];
+      for (let j = 0; j < numPoints; j++) {
+        // ICoord3D: integer coordinates
+        trigger.points.push({ x: reader.readInt32(), y: reader.readInt32(), z: reader.readInt32() });
+      }
+      mapData.polygonTriggers.push(trigger);
+    }
+  } catch(e) {
+    // partial parse OK
+  }
+}
+
+function parseWorldInfo(reader, version, chunkEnd, tocById, mapData) {
+  try {
+    mapData.worldInfo = reader.readDict(tocById);
+  } catch(e) {
+    // partial parse OK
+  }
+}
+
+// ─── Terrain Type Color Mapping ─────────────────────────────────────────
+
+const TERRAIN_COLORS = {
+  'AsphaltType1':   0x3a3a3e, 'AsphaltType2':   0x4a4a4e,
+  'Concrete':       0x7a7a7a, 'Pavement':       0x6a6a6e,
+  'RoadType1':      0x555555, 'RoadType2':      0x4f4f4f,
+  'Dirt':           0x8b7355, 'DirtType2':      0x7a6344,
+  'DirtType3':      0x6b5535, 'DirtRoad':       0x9a8365,
+  'CliffType1':     0x6b5b4b, 'CliffType2':     0x5b4b3b,
+  'Sand':           0xc2a96e, 'SandType2':      0xb89e60,
+  'SandType3':      0xd4bc7a, 'SandDunes':      0xd9c07f,
+  'Desert':         0xc8ab6a, 'DesertSand':     0xc8b070,
+  'Grass':          0x4a7a30, 'GrassType2':     0x3a6a24,
+  'GrassType3':     0x5a8a3a, 'GrassTall':      0x3f7028,
+  'GrassField':     0x4a7a30, 'TallGrass':      0x3f7028,
+  'ShortGrass':     0x5a8a3a, 'MediumGrass':    0x4a7a30,
+  'Rock':           0x6a6a5e, 'RockType2':      0x5a5a4e,
+  'RockType3':      0x7a7a6e,
+  'Snow':           0xd8dce6, 'SnowType2':      0xc8ccd6,
+  'Ice':            0xa8c8e0,
+  'Water':          0x2060a0, 'WaterEdge':      0x408ab0,
+  'Mud':            0x5a4a30, 'MudType2':       0x6a5a40,
+  'Swamp':          0x3a5a2a,
+  'Urban':          0x5a5a60, 'UrbanType2':     0x4a4a50,
+  'Field':          0x6a9a40, 'Farmland':       0x7a8a3a,
+  'GrassRock':      0x5a7a4a, 'BlendRock':      0x6a6a55,
+  'Tundra':         0x8a9a90,
+};
+
+function getTerrainColor(name) {
+  if (!name) return 0x808060;
+  const nameClean = name.replace(/\.tga$/i, '');
+
+  for (const [key, color] of Object.entries(TERRAIN_COLORS)) {
+    if (nameClean.toLowerCase().includes(key.toLowerCase())) return color;
+  }
+
+  // Hash-based fallback color
+  let hash = 0;
+  for (let i = 0; i < nameClean.length; i++) {
+    hash = ((hash << 5) - hash + nameClean.charCodeAt(i)) | 0;
+  }
+  const h = Math.abs(hash) % 360;
+  return hslToHex(h, 0.35, 0.45);
+}
+
+function hslToHex(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+  const m = l - c / 2;
+  let r, g, b;
+  if (h < 60) { r = c; g = x; b = 0; }
+  else if (h < 120) { r = x; g = c; b = 0; }
+  else if (h < 180) { r = 0; g = c; b = x; }
+  else if (h < 240) { r = 0; g = x; b = c; }
+  else if (h < 300) { r = x; g = 0; b = c; }
+  else { r = c; g = 0; b = x; }
+  return (Math.round((r + m) * 255) << 16) | (Math.round((g + m) * 255) << 8) | Math.round((b + m) * 255);
+}
+
+// ─── BIG Archive Parser ─────────────────────────────────────────────────
+
+// Merged file pool across all loaded BIG archives
+const bigFilePool = new Map(); // lowercase path → { buffer, offset, size }
+const terrainTypeMap = new Map(); // terrain type name (lowercase) → tga filename (lowercase)
+
+function parseBigFile(buffer, filename) {
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+
+  const magic = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+  if (magic !== 'BIGF' && magic !== 'BIG4') throw new Error('Not a BIG archive file');
+
+  const numFiles = view.getUint32(8, false); // big-endian
+  let pos = 16; // directory starts at offset 0x10
+  let addedCount = 0;
+
+  for (let i = 0; i < numFiles; i++) {
+    const offset = view.getUint32(pos, false); // big-endian
+    const size = view.getUint32(pos + 4, false); // big-endian
+    pos += 8;
+    let path = '';
+    while (bytes[pos] !== 0) { path += String.fromCharCode(bytes[pos++]); }
+    pos++; // skip null terminator
+    const key = path.toLowerCase().replace(/\\/g, '/');
+    bigFilePool.set(key, { buffer, offset, size });
+    addedCount++;
+  }
+
+  console.log(`BIG "${filename}": ${addedCount} files added to pool (${bigFilePool.size} total)`);
+
+  // After loading, scan for Terrain.ini files and parse them
+  parseTerrainIniFromPool();
+
+  // Log available terrain TGAs for debugging
+  listTerrainFiles();
+}
+
+function getFileFromPool(path) {
+  return bigFilePool.get(path.toLowerCase().replace(/\\/g, '/'));
+}
+
+function getFileData(path) {
+  const info = getFileFromPool(path);
+  if (!info) return null;
+  return new Uint8Array(info.buffer, info.offset, info.size);
+}
+
+// ─── Terrain.ini Parser ─────────────────────────────────────────────────
+
+function parseTerrainIniFromPool() {
+  const iniPaths = [
+    'data/ini/terrain.ini',
+    'data/ini/default/terrain.ini',
+  ];
+
+  for (const path of iniPaths) {
+    const data = getFileData(path);
+    if (!data) continue;
+    const text = new TextDecoder('ascii').decode(data);
+    parseTerrainIni(text);
+    console.log(`Parsed ${path}: ${terrainTypeMap.size} terrain type mappings`);
+  }
+}
+
+function parseTerrainIni(text) {
+  const lines = text.split(/\r?\n/);
+  let currentName = null;
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/;.*$/, '').trim(); // strip comments
+    if (!line) continue;
+
+    const terrainMatch = line.match(/^Terrain\s+(\S+)/i);
+    if (terrainMatch) {
+      currentName = terrainMatch[1];
+      continue;
+    }
+
+    if (/^End$/i.test(line)) {
+      currentName = null;
+      continue;
+    }
+
+    if (currentName) {
+      const texMatch = line.match(/^Texture\s*=\s*(\S+)/i);
+      if (texMatch) {
+        terrainTypeMap.set(currentName.toLowerCase(), texMatch[1].toLowerCase());
+      }
+    }
+  }
+}
+
+// ─── BIG File Listing ───────────────────────────────────────────────────
+
+function listTerrainFiles() {
+  const terrainFiles = [];
+  for (const [path] of bigFilePool) {
+    if (path.startsWith('art/terrain/') && path.endsWith('.tga')) {
+      terrainFiles.push(path);
+    }
+  }
+  terrainFiles.sort();
+  if (terrainFiles.length > 0) {
+    console.groupCollapsed(`Terrain TGAs in BIG pool (${terrainFiles.length})`);
+    for (const f of terrainFiles) console.log(f);
+    console.groupEnd();
+  }
+}
+
+function listAllBigFiles() {
+  const paths = Array.from(bigFilePool.keys()).sort();
+  console.groupCollapsed(`All files in BIG pool (${paths.length})`);
+  for (const p of paths) {
+    const info = bigFilePool.get(p);
+    console.log(`${p}  (${info.size} bytes)`);
+  }
+  console.groupEnd();
+  return paths;
+}
+
+// Resolve a texture class name to a TGA file in the pool.
+// Priority: INI mapping → exact name → fuzzy basename match
+function resolveTerrainTGA(texClassName) {
+  const name = texClassName.replace(/\.tga$/i, '').toLowerCase();
+
+  // 1) INI mapping (e.g. "AsphaltType1" → "Asphalt1.tga")
+  const iniTga = terrainTypeMap.get(name);
+  if (iniTga) {
+    const path = `art/terrain/${iniTga}`;
+    if (getFileFromPool(path)) return path;
+  }
+
+  // 2) Exact match (name used directly as TGA filename)
+  const exact = `art/terrain/${name}.tga`;
+  if (getFileFromPool(exact)) return exact;
+
+  // 3) Fuzzy: scan all art/terrain/*.tga for a basename containing the name
+  //    or the name containing the basename (handles abbreviations)
+  let bestMatch = null;
+  let bestScore = 0;
+  for (const [path] of bigFilePool) {
+    if (!path.startsWith('art/terrain/') || !path.endsWith('.tga')) continue;
+    const basename = path.slice(12, -4); // strip "art/terrain/" and ".tga"
+    if (basename === name) { bestMatch = path; break; }
+
+    // Score partial matches
+    let score = 0;
+    if (name.includes(basename) || basename.includes(name)) score = 3;
+    else {
+      // Try stripping "type" and trailing digits from both
+      const stripType = s => s.replace(/type\d*/gi, '').replace(/\d+$/, '');
+      const sName = stripType(name);
+      const sBase = stripType(basename);
+      if (sName && sBase && (sName.includes(sBase) || sBase.includes(sName))) score = 2;
+    }
+    if (score > bestScore) { bestScore = score; bestMatch = path; }
+  }
+
+  if (bestMatch && bestScore >= 2) {
+    console.log(`Fuzzy matched "${name}" → "${bestMatch}"`);
+    return bestMatch;
+  }
+
+  return null;
+}
+
+// ─── TGA Parser ─────────────────────────────────────────────────────────
+
+function parseTGA(data) {
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+  const idLength = bytes[0];
+  const colorMapType = bytes[1];
+  const imageType = bytes[2];
+  const width = view.getInt16(12, true);
+  const height = view.getInt16(14, true);
+  const pixelDepth = bytes[16];
+  const flags = bytes[17];
+
+  if (colorMapType !== 0) throw new Error('Indexed TGA not supported');
+  const bpp = Math.floor((pixelDepth + 7) / 8);
+  if (bpp < 3 || bpp > 4) throw new Error(`Unsupported pixel depth: ${pixelDepth}`);
+  const compressed = !!(imageType & 0x08);
+  if ((imageType & 0x07) !== 2) throw new Error(`Unsupported image type: ${imageType}`);
+  const topToBottom = !!(flags & 0x20);
+
+  let p = 18 + idLength;
+  const pixels = new Uint8Array(width * height * 4);
+
+  if (compressed) {
+    let count = 0;
+    while (count < width * height) {
+      const packet = bytes[p++];
+      const len = (packet & 0x7F) + 1;
+      if (packet & 0x80) {
+        const b = bytes[p++], g = bytes[p++], r = bytes[p++];
+        const a = bpp === 4 ? bytes[p++] : 255;
+        for (let j = 0; j < len; j++) {
+          const idx = count++ * 4;
+          pixels[idx] = r; pixels[idx+1] = g; pixels[idx+2] = b; pixels[idx+3] = a;
+        }
+      } else {
+        for (let j = 0; j < len; j++) {
+          const idx = count++ * 4;
+          pixels[idx] = bytes[p+2]; pixels[idx+1] = bytes[p+1];
+          pixels[idx+2] = bytes[p]; pixels[idx+3] = bpp === 4 ? bytes[p+3] : 255;
+          p += bpp;
+        }
+      }
+    }
+  } else {
+    for (let i = 0; i < width * height; i++) {
+      const idx = i * 4;
+      pixels[idx] = bytes[p+2]; pixels[idx+1] = bytes[p+1];
+      pixels[idx+2] = bytes[p]; pixels[idx+3] = bpp === 4 ? bytes[p+3] : 255;
+      p += bpp;
+    }
+  }
+
+  // TGA default is bottom-to-top; if top-to-bottom flag set, flip to bottom-to-top
+  // We keep bottom-to-top so row 0 = V=0 in OpenGL/DataTexture
+  if (topToBottom) {
+    const rowBytes = width * 4;
+    const temp = new Uint8Array(rowBytes);
+    for (let y = 0; y < Math.floor(height / 2); y++) {
+      const top = y * rowBytes, bot = (height - 1 - y) * rowBytes;
+      temp.set(pixels.subarray(top, top + rowBytes));
+      pixels.set(pixels.subarray(bot, bot + rowBytes), top);
+      pixels.set(temp, bot);
+    }
+  }
+
+  return { width, height, pixels };
+}
+
+// ─── DDS Parser ─────────────────────────────────────────────────────────
+
+function parseDDS(data) {
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+  const magic = view.getUint32(0, true);
+  if (magic !== 0x20534444) throw new Error('Not a DDS file');
+
+  const height = view.getUint32(12, true);
+  const width = view.getUint32(16, true);
+  const pfFlags = view.getUint32(80, true);
+  const fourCC = String.fromCharCode(bytes[84], bytes[85], bytes[86], bytes[87]);
+
+  const DDPF_FOURCC = 0x04;
+  const DDPF_RGB = 0x40;
+  const DDPF_ALPHAPIXELS = 0x01;
+  const headerSize = 128;
+  const texData = bytes.subarray(headerSize);
+
+  if (pfFlags & DDPF_FOURCC) {
+    if (fourCC === 'DXT1') return decodeDXT1(texData, width, height);
+    if (fourCC === 'DXT3') return decodeDXT3(texData, width, height);
+    if (fourCC === 'DXT5') return decodeDXT5(texData, width, height);
+    throw new Error('Unsupported DDS FourCC: ' + fourCC);
+  }
+
+  if (pfFlags & DDPF_RGB) {
+    const rgbBitCount = view.getUint32(88, true);
+    const rMask = view.getUint32(92, true);
+    const gMask = view.getUint32(96, true);
+    const bMask = view.getUint32(100, true);
+    const aMask = (pfFlags & DDPF_ALPHAPIXELS) ? view.getUint32(104, true) : 0;
+    return decodeUncompressedDDS(texData, width, height, rgbBitCount, rMask, gMask, bMask, aMask);
+  }
+
+  throw new Error('Unsupported DDS pixel format');
+}
+
+function decodeUncompressedDDS(data, width, height, bpp, rMask, gMask, bMask, aMask) {
+  const bytesPerPixel = bpp / 8;
+  const pixels = new Uint8Array(width * height * 4);
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+
+  function maskShift(mask) {
+    if (!mask) return { shift: 0, bits: 0 };
+    let shift = 0;
+    let m = mask;
+    while (m && !(m & 1)) { shift++; m >>= 1; }
+    let bits = 0;
+    while (m & 1) { bits++; m >>= 1; }
+    return { shift, bits };
+  }
+
+  const rS = maskShift(rMask), gS = maskShift(gMask), bS = maskShift(bMask), aS = maskShift(aMask);
+
+  for (let i = 0; i < width * height; i++) {
+    let val = 0;
+    const off = i * bytesPerPixel;
+    for (let b = 0; b < bytesPerPixel; b++) val |= data[off + b] << (b * 8);
+    const r = rS.bits ? ((val >> rS.shift) & ((1 << rS.bits) - 1)) * 255 / ((1 << rS.bits) - 1) : 0;
+    const g = gS.bits ? ((val >> gS.shift) & ((1 << gS.bits) - 1)) * 255 / ((1 << gS.bits) - 1) : 0;
+    const b2 = bS.bits ? ((val >> bS.shift) & ((1 << bS.bits) - 1)) * 255 / ((1 << bS.bits) - 1) : 0;
+    const a = aS.bits ? ((val >> aS.shift) & ((1 << aS.bits) - 1)) * 255 / ((1 << aS.bits) - 1) : 255;
+    const idx = i * 4;
+    pixels[idx] = r; pixels[idx + 1] = g; pixels[idx + 2] = b2; pixels[idx + 3] = a;
+  }
+  return { width, height, pixels };
+}
+
+function unpackRGB565(c) {
+  return [
+    ((c >> 11) & 0x1F) * 255 / 31 | 0,
+    ((c >> 5) & 0x3F) * 255 / 63 | 0,
+    (c & 0x1F) * 255 / 31 | 0,
+  ];
+}
+
+function decodeDXT1(data, width, height) {
+  const pixels = new Uint8Array(width * height * 4);
+  const bw = (width + 3) >> 2, bh = (height + 3) >> 2;
+  let offset = 0;
+  for (let by = 0; by < bh; by++) {
+    for (let bx = 0; bx < bw; bx++) {
+      const c0 = data[offset] | (data[offset + 1] << 8);
+      const c1 = data[offset + 2] | (data[offset + 3] << 8);
+      const r0 = unpackRGB565(c0), r1 = unpackRGB565(c1);
+      const palette = [r0, r1];
+      if (c0 > c1) {
+        palette[2] = [((2*r0[0]+r1[0])/3)|0, ((2*r0[1]+r1[1])/3)|0, ((2*r0[2]+r1[2])/3)|0];
+        palette[3] = [((r0[0]+2*r1[0])/3)|0, ((r0[1]+2*r1[1])/3)|0, ((r0[2]+2*r1[2])/3)|0];
+      } else {
+        palette[2] = [((r0[0]+r1[0])/2)|0, ((r0[1]+r1[1])/2)|0, ((r0[2]+r1[2])/2)|0];
+        palette[3] = [0, 0, 0];
+      }
+      const bits = data[offset+4] | (data[offset+5]<<8) | (data[offset+6]<<16) | (data[offset+7]<<24);
+      for (let py = 0; py < 4; py++) {
+        for (let px = 0; px < 4; px++) {
+          const x = bx * 4 + px, y = by * 4 + py;
+          if (x >= width || y >= height) continue;
+          const idx = ((y) * width + x) * 4;
+          const ci = (bits >> ((py * 4 + px) * 2)) & 3;
+          pixels[idx] = palette[ci][0];
+          pixels[idx+1] = palette[ci][1];
+          pixels[idx+2] = palette[ci][2];
+          pixels[idx+3] = (c0 <= c1 && ci === 3) ? 0 : 255;
+        }
+      }
+      offset += 8;
+    }
+  }
+  return { width, height, pixels };
+}
+
+function decodeDXT3(data, width, height) {
+  const pixels = new Uint8Array(width * height * 4);
+  const bw = (width + 3) >> 2, bh = (height + 3) >> 2;
+  let offset = 0;
+  for (let by = 0; by < bh; by++) {
+    for (let bx = 0; bx < bw; bx++) {
+      const alphaBlock = [];
+      for (let i = 0; i < 8; i++) alphaBlock.push(data[offset + i]);
+      offset += 8;
+      const c0 = data[offset] | (data[offset+1] << 8);
+      const c1 = data[offset+2] | (data[offset+3] << 8);
+      const r0 = unpackRGB565(c0), r1 = unpackRGB565(c1);
+      const palette = [r0, r1,
+        [((2*r0[0]+r1[0])/3)|0, ((2*r0[1]+r1[1])/3)|0, ((2*r0[2]+r1[2])/3)|0],
+        [((r0[0]+2*r1[0])/3)|0, ((r0[1]+2*r1[1])/3)|0, ((r0[2]+2*r1[2])/3)|0]
+      ];
+      const bits = data[offset+4] | (data[offset+5]<<8) | (data[offset+6]<<16) | (data[offset+7]<<24);
+      for (let py = 0; py < 4; py++) {
+        for (let px = 0; px < 4; px++) {
+          const x = bx * 4 + px, y = by * 4 + py;
+          if (x >= width || y >= height) continue;
+          const idx = (y * width + x) * 4;
+          const ci = (bits >> ((py * 4 + px) * 2)) & 3;
+          pixels[idx] = palette[ci][0];
+          pixels[idx+1] = palette[ci][1];
+          pixels[idx+2] = palette[ci][2];
+          const alphaIdx = py * 4 + px;
+          const alphaByte = alphaBlock[alphaIdx >> 1];
+          pixels[idx+3] = ((alphaIdx & 1) ? (alphaByte >> 4) : (alphaByte & 0x0F)) * 17;
+        }
+      }
+      offset += 8;
+    }
+  }
+  return { width, height, pixels };
+}
+
+function decodeDXT5(data, width, height) {
+  const pixels = new Uint8Array(width * height * 4);
+  const bw = (width + 3) >> 2, bh = (height + 3) >> 2;
+  let offset = 0;
+  for (let by = 0; by < bh; by++) {
+    for (let bx = 0; bx < bw; bx++) {
+      const a0 = data[offset], a1 = data[offset + 1];
+      const alphaLUT = [a0, a1];
+      if (a0 > a1) {
+        for (let i = 1; i <= 6; i++) alphaLUT.push(((6-i)*a0 + i*a1 + 3) / 7 | 0);
+      } else {
+        for (let i = 1; i <= 4; i++) alphaLUT.push(((4-i)*a0 + i*a1 + 2) / 5 | 0);
+        alphaLUT.push(0, 255);
+      }
+      let alphaBits = 0n;
+      for (let i = 0; i < 6; i++) alphaBits |= BigInt(data[offset + 2 + i]) << BigInt(i * 8);
+      offset += 8;
+
+      const c0 = data[offset] | (data[offset+1] << 8);
+      const c1 = data[offset+2] | (data[offset+3] << 8);
+      const r0 = unpackRGB565(c0), r1 = unpackRGB565(c1);
+      const palette = [r0, r1,
+        [((2*r0[0]+r1[0])/3)|0, ((2*r0[1]+r1[1])/3)|0, ((2*r0[2]+r1[2])/3)|0],
+        [((r0[0]+2*r1[0])/3)|0, ((r0[1]+2*r1[1])/3)|0, ((r0[2]+2*r1[2])/3)|0]
+      ];
+      const bits = data[offset+4] | (data[offset+5]<<8) | (data[offset+6]<<16) | (data[offset+7]<<24);
+      for (let py = 0; py < 4; py++) {
+        for (let px = 0; px < 4; px++) {
+          const x = bx * 4 + px, y = by * 4 + py;
+          if (x >= width || y >= height) continue;
+          const idx = (y * width + x) * 4;
+          const ci = (bits >> ((py * 4 + px) * 2)) & 3;
+          pixels[idx] = palette[ci][0];
+          pixels[idx+1] = palette[ci][1];
+          pixels[idx+2] = palette[ci][2];
+          const ai = py * 4 + px;
+          pixels[idx+3] = alphaLUT[Number((alphaBits >> BigInt(ai * 3)) & 7n)];
+        }
+      }
+      offset += 8;
+    }
+  }
+  return { width, height, pixels };
+}
+
+// ─── W3D Parser ─────────────────────────────────────────────────────────
+
+const W3D_CHUNK_MESH           = 0x00000000;
+const W3D_CHUNK_MESH_HEADER3   = 0x0000001F;
+const W3D_CHUNK_VERTICES       = 0x00000002;
+const W3D_CHUNK_VERTEX_NORMALS = 0x00000003;
+const W3D_CHUNK_TRIANGLES      = 0x00000020;
+const W3D_CHUNK_TEXTURES       = 0x00000030;
+const W3D_CHUNK_TEXTURE        = 0x00000031;
+const W3D_CHUNK_TEXTURE_NAME   = 0x00000032;
+const W3D_CHUNK_MATERIAL_PASS  = 0x00000038;
+const W3D_CHUNK_TEXTURE_STAGE  = 0x00000048;
+const W3D_CHUNK_TEXTURE_IDS    = 0x00000049;
+const W3D_CHUNK_STAGE_TEXCOORDS= 0x0000004A;
+const W3D_CHUNK_VERTEX_MATERIALS= 0x0000002A;
+const W3D_CHUNK_MATERIAL_INFO  = 0x00000028;
+const W3D_CHUNK_HIERARCHY      = 0x00000100;
+const W3D_CHUNK_HIERARCHY_HEADER=0x00000101;
+const W3D_CHUNK_PIVOTS         = 0x00000102;
+const W3D_CHUNK_HLOD           = 0x00000700;
+const W3D_CHUNK_HLOD_HEADER    = 0x00000701;
+const W3D_CHUNK_HLOD_LOD_ARRAY = 0x00000702;
+const W3D_CHUNK_HLOD_SUB_OBJECT_ARRAY_HEADER = 0x00000703;
+const W3D_CHUNK_HLOD_SUB_OBJECT = 0x00000704;
+const W3D_CHUNK_BOX            = 0x00000740;
+const W3D_CHUNK_VERTEX_INFLUENCES = 0x0000000E;
+
+const W3D_MESH_FLAG_HIDDEN       = 0x00001000;
+const W3D_MESH_FLAG_PRELIT_UNLIT = 0x01000000;
+const W3D_MESH_FLAG_GEOMETRY_TYPE_MASK = 0x00FF0000;
+const W3D_MESH_FLAG_GEOMETRY_TYPE_SKIN = 0x00020000;
+const W3D_MESH_FLAG_SKIN_LEGACY       = 0x00000002;
+
+function parseW3D(buffer) {
+  const view = new DataView(buffer);
+  const meshes = [];
+  let hierarchy = null;
+  let hlod = null;
+
+  function readChunks(start, end) {
+    let pos = start;
+    while (pos + 8 <= end) {
+      const chunkId = view.getUint32(pos, true);
+      const chunkSizeRaw = view.getUint32(pos + 4, true);
+      const isContainer = !!(chunkSizeRaw & 0x80000000);
+      const chunkSize = chunkSizeRaw & 0x7FFFFFFF;
+      const dataStart = pos + 8;
+      const dataEnd = Math.min(dataStart + chunkSize, end);
+      pos = dataEnd;
+
+      if (chunkId === W3D_CHUNK_MESH) {
+        meshes.push(parseMeshChunk(dataStart, dataEnd));
+      } else if (chunkId === W3D_CHUNK_HIERARCHY) {
+        hierarchy = parseHierarchy(dataStart, dataEnd);
+      } else if (chunkId === W3D_CHUNK_HLOD) {
+        hlod = parseHLod(dataStart, dataEnd);
+      }
+    }
+  }
+
+  function readString(offset, maxLen) {
+    let s = '';
+    for (let i = 0; i < maxLen; i++) {
+      const c = view.getUint8(offset + i);
+      if (c === 0) break;
+      s += String.fromCharCode(c);
+    }
+    return s;
+  }
+
+  function parseMeshChunk(start, end) {
+    const mesh = { name: '', attrs: 0, vertices: null, normals: null, triangles: null, uvs: null, textureNames: [], numVerts: 0, numTris: 0 };
+    let pos = start;
+    while (pos + 8 <= end) {
+      const id = view.getUint32(pos, true);
+      const sizeRaw = view.getUint32(pos + 4, true);
+      const size = sizeRaw & 0x7FFFFFFF;
+      const dStart = pos + 8;
+      const dEnd = Math.min(dStart + size, end);
+      pos = dEnd;
+
+      switch (id) {
+        case W3D_CHUNK_MESH_HEADER3: {
+          // Version(4) + Attributes(4) + MeshName(16) + ContainerName(16) = offset 40
+          mesh.attrs = view.getUint32(dStart + 4, true);
+          mesh.name = readString(dStart + 8, 16);
+          mesh.numTris = view.getUint32(dStart + 40, true);
+          mesh.numVerts = view.getUint32(dStart + 44, true);
+          break;
+        }
+        case W3D_CHUNK_VERTICES: {
+          const count = Math.min(size / 12, mesh.numVerts || size / 12);
+          mesh.vertices = new Float32Array(count * 3);
+          for (let i = 0; i < count; i++) {
+            mesh.vertices[i*3]   = view.getFloat32(dStart + i*12, true);
+            mesh.vertices[i*3+1] = view.getFloat32(dStart + i*12+4, true);
+            mesh.vertices[i*3+2] = view.getFloat32(dStart + i*12+8, true);
+          }
+          break;
+        }
+        case W3D_CHUNK_VERTEX_NORMALS: {
+          const count = Math.min(size / 12, mesh.numVerts || size / 12);
+          mesh.normals = new Float32Array(count * 3);
+          for (let i = 0; i < count; i++) {
+            mesh.normals[i*3]   = view.getFloat32(dStart + i*12, true);
+            mesh.normals[i*3+1] = view.getFloat32(dStart + i*12+4, true);
+            mesh.normals[i*3+2] = view.getFloat32(dStart + i*12+8, true);
+          }
+          break;
+        }
+        case W3D_CHUNK_TRIANGLES: {
+          // W3dTriStruct: uint32[3] vindex + uint32 attrs + float[3] normal + float dist = 32 bytes
+          const count = Math.min(size / 32, mesh.numTris || size / 32);
+          mesh.triangles = new Uint32Array(count * 3);
+          for (let i = 0; i < count; i++) {
+            mesh.triangles[i*3]   = view.getUint32(dStart + i*32, true);
+            mesh.triangles[i*3+1] = view.getUint32(dStart + i*32+4, true);
+            mesh.triangles[i*3+2] = view.getUint32(dStart + i*32+8, true);
+          }
+          break;
+        }
+        case W3D_CHUNK_VERTEX_INFLUENCES: {
+          // W3dVertInfStruct: uint16 BoneIdx + 6 bytes pad = 8 bytes per vertex
+          const count = Math.min(size / 8, mesh.numVerts || size / 8);
+          mesh.boneLinks = new Uint16Array(count);
+          for (let i = 0; i < count; i++) {
+            mesh.boneLinks[i] = view.getUint16(dStart + i * 8, true);
+          }
+          break;
+        }
+        case W3D_CHUNK_TEXTURES:
+        case W3D_CHUNK_MATERIAL_PASS:
+        case W3D_CHUNK_TEXTURE_STAGE: {
+          let sp = dStart;
+          while (sp + 8 <= dEnd) {
+            const sid = view.getUint32(sp, true);
+            const ssRaw = view.getUint32(sp + 4, true);
+            const ss = ssRaw & 0x7FFFFFFF;
+            const sdStart = sp + 8;
+            const sdEnd = Math.min(sdStart + ss, dEnd);
+            sp = sdEnd;
+
+            if (sid === W3D_CHUNK_TEXTURE) {
+              // Parse texture sub-chunks
+              let tp = sdStart;
+              while (tp + 8 <= sdEnd) {
+                const tid = view.getUint32(tp, true);
+                const tsRaw = view.getUint32(tp + 4, true);
+                const ts = tsRaw & 0x7FFFFFFF;
+                const tdStart = tp + 8;
+                tp = Math.min(tdStart + ts, sdEnd);
+                if (tid === W3D_CHUNK_TEXTURE_NAME) {
+                  mesh.textureNames.push(readString(tdStart, ts));
+                }
+              }
+            } else if (sid === W3D_CHUNK_STAGE_TEXCOORDS) {
+              const count = ss / 8;
+              mesh.uvs = new Float32Array(count * 2);
+              for (let i = 0; i < count; i++) {
+                mesh.uvs[i*2]   = view.getFloat32(sdStart + i*8, true);
+                mesh.uvs[i*2+1] = view.getFloat32(sdStart + i*8+4, true);
+              }
+            } else if (sid === W3D_CHUNK_TEXTURE_STAGE) {
+              // Recurse one more level for nested texture stage
+              let tsp = sdStart;
+              while (tsp + 8 <= sdEnd) {
+                const tsid = view.getUint32(tsp, true);
+                const tssRaw = view.getUint32(tsp + 4, true);
+                const tss = tssRaw & 0x7FFFFFFF;
+                const tsdStart = tsp + 8;
+                tsp = Math.min(tsdStart + tss, sdEnd);
+                if (tsid === W3D_CHUNK_STAGE_TEXCOORDS && !mesh.uvs) {
+                  const cnt = tss / 8;
+                  mesh.uvs = new Float32Array(cnt * 2);
+                  for (let i = 0; i < cnt; i++) {
+                    mesh.uvs[i*2]   = view.getFloat32(tsdStart + i*8, true);
+                    mesh.uvs[i*2+1] = view.getFloat32(tsdStart + i*8+4, true);
+                  }
+                }
+              }
+            }
+          }
+          break;
+        }
+      }
+    }
+    return mesh;
+  }
+
+  function parseHierarchy(start, end) {
+    const hier = { name: '', pivots: [] };
+    let pos = start;
+    while (pos + 8 <= end) {
+      const id = view.getUint32(pos, true);
+      const sizeRaw = view.getUint32(pos + 4, true);
+      const size = sizeRaw & 0x7FFFFFFF;
+      const dStart = pos + 8;
+      pos = Math.min(dStart + size, end);
+
+      if (id === W3D_CHUNK_HIERARCHY_HEADER) {
+        hier.name = readString(dStart + 4, 16);
+        hier.numPivots = view.getUint32(dStart + 20, true);
+      } else if (id === W3D_CHUNK_PIVOTS) {
+        // W3dPivotStruct: Name(16) + ParentIdx(4) + Translation(12) + EulerAngles(12) + Rotation(16) = 60 bytes
+        const count = Math.floor(size / 60);
+        for (let i = 0; i < count; i++) {
+          const off = dStart + i * 60;
+          hier.pivots.push({
+            name: readString(off, 16),
+            parentIdx: view.getUint32(off + 16, true),
+            translation: [view.getFloat32(off+20,true), view.getFloat32(off+24,true), view.getFloat32(off+28,true)],
+            rotation: [view.getFloat32(off+44,true), view.getFloat32(off+48,true), view.getFloat32(off+52,true), view.getFloat32(off+56,true)],
+          });
+        }
+      }
+    }
+    return hier;
+  }
+
+  function parseHLod(start, end) {
+    const hlod = { name: '', hierarchy: '', lods: [] };
+    let pos = start;
+    while (pos + 8 <= end) {
+      const id = view.getUint32(pos, true);
+      const sizeRaw = view.getUint32(pos + 4, true);
+      const size = sizeRaw & 0x7FFFFFFF;
+      const dStart = pos + 8;
+      const dEnd = Math.min(dStart + size, end);
+      pos = dEnd;
+
+      if (id === W3D_CHUNK_HLOD_HEADER) {
+        hlod.name = readString(dStart + 8, 16);
+        hlod.hierarchy = readString(dStart + 24, 16);
+      } else if (id === W3D_CHUNK_HLOD_LOD_ARRAY) {
+        const subObjects = [];
+        let sp = dStart;
+        while (sp + 8 <= dEnd) {
+          const sid = view.getUint32(sp, true);
+          const ssRaw = view.getUint32(sp + 4, true);
+          const ss = ssRaw & 0x7FFFFFFF;
+          const sdStart = sp + 8;
+          sp = Math.min(sdStart + ss, dEnd);
+          if (sid === W3D_CHUNK_HLOD_SUB_OBJECT) {
+            subObjects.push({
+              boneIdx: view.getUint32(sdStart, true),
+              name: readString(sdStart + 4, ss - 4),
+            });
+          }
+        }
+        hlod.lods.push(subObjects);
+      }
+    }
+    return hlod;
+  }
+
+  readChunks(0, buffer.byteLength);
+  return { meshes, hierarchy, hlod };
+}
+
+// ─── W3D to Three.js ────────────────────────────────────────────────────
+
+const w3dModelCache = new Map();
+const w3dTextureCache = new Map();
+
+function w3dMeshToThreeJS(w3dMesh) {
+  if (!w3dMesh.vertices || !w3dMesh.triangles) return null;
+
+  const geo = new THREE.BufferGeometry();
+
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(w3dMesh.vertices, 3));
+
+  if (w3dMesh.normals) {
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(w3dMesh.normals, 3));
+  }
+
+  if (w3dMesh.uvs) {
+    const flippedUVs = new Float32Array(w3dMesh.uvs.length);
+    for (let i = 0; i < w3dMesh.uvs.length; i += 2) {
+      flippedUVs[i] = w3dMesh.uvs[i];
+      flippedUVs[i+1] = 1.0 - w3dMesh.uvs[i+1];
+    }
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(flippedUVs, 2));
+  }
+
+  geo.setIndex(new THREE.BufferAttribute(w3dMesh.triangles, 1));
+
+  if (!w3dMesh.normals) geo.computeVertexNormals();
+
+  const isPrelitUnlit = !!(w3dMesh.attrs & W3D_MESH_FLAG_PRELIT_UNLIT);
+  const mnameLower = w3dMesh.name.toLowerCase();
+  const isLight = mnameLower.includes('light') || mnameLower.includes('glow') ||
+                  mnameLower.includes('muzzle') || mnameLower.includes('fxfire') ||
+                  mnameLower.includes('flame') || mnameLower.includes('beacon');
+
+  let material;
+  const texName = w3dMesh.textureNames[0];
+  if (texName) {
+    const tex = isLight ? loadW3DTextureLuminanceAlpha(texName) : loadW3DTexture(texName);
+    if (tex) {
+      if (isLight) {
+        material = new THREE.MeshBasicMaterial({
+          map: tex,
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          side: THREE.DoubleSide,
+        });
+      } else if (isPrelitUnlit) {
+        material = new THREE.MeshBasicMaterial({
+          map: tex,
+          transparent: true,
+          depthWrite: false,
+        });
+      } else {
+        const hasAlpha = texName.toLowerCase().includes('alpha') ||
+                         texName.toLowerCase().includes('tree') ||
+                         texName.toLowerCase().includes('bush') ||
+                         texName.toLowerCase().includes('shrub');
+        material = new THREE.MeshLambertMaterial({
+          map: tex,
+          transparent: hasAlpha,
+          alphaTest: hasAlpha ? 0.3 : 0,
+        });
+      }
+    } else if (isLight) {
+      console.warn('Missing light texture:', texName, 'for mesh:', w3dMesh.name);
+    }
+  }
+  if (!material) {
+    if (isLight) {
+      material = new THREE.MeshBasicMaterial({
+        color: 0xffffaa, transparent: true, opacity: 0.6,
+        depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+    } else {
+      material = isPrelitUnlit
+        ? new THREE.MeshBasicMaterial({ color: 0xffffcc })
+        : new THREE.MeshLambertMaterial({ color: 0xcccccc });
+    }
+  }
+
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.userData.isPrelitUnlit = isPrelitUnlit;
+  return mesh;
+}
+
+function loadW3DTexture(name) {
+  const key = name.toLowerCase().replace(/\.[^.]+$/, '');
+  if (w3dTextureCache.has(key)) return w3dTextureCache.get(key);
+
+  const tex = loadTextureFromPool(name);
+  w3dTextureCache.set(key, tex);
+  return tex;
+}
+
+function loadW3DTextureLuminanceAlpha(name) {
+  const key = 'lum_' + name.toLowerCase().replace(/\.[^.]+$/, '');
+  if (w3dTextureCache.has(key)) return w3dTextureCache.get(key);
+
+  const tex = loadTextureFromPoolWithLuminanceAlpha(name);
+  w3dTextureCache.set(key, tex);
+  return tex;
+}
+
+function loadW3DModel(w3dPath) {
+  const key = w3dPath.toLowerCase();
+  if (w3dModelCache.has(key)) return w3dModelCache.get(key);
+
+  const entry = getFileFromPool(w3dPath);
+  if (!entry) { w3dModelCache.set(key, null); return null; }
+
+  try {
+    const w3d = parseW3D(entry.buffer.slice(entry.offset, entry.offset + entry.size));
+    if (w3d.meshes.length === 0) { w3dModelCache.set(key, null); return null; }
+
+    // If hierarchy is missing but HLOD references one, load from external skeleton file
+    if (!w3d.hierarchy && w3d.hlod && w3d.hlod.hierarchy) {
+      const skelName = w3d.hlod.hierarchy.toLowerCase();
+      const skelPath = w3dFileIndex.get(skelName);
+      if (skelPath) {
+        const skelEntry = getFileFromPool(skelPath);
+        if (skelEntry) {
+          try {
+            const skelW3D = parseW3D(skelEntry.buffer.slice(skelEntry.offset, skelEntry.offset + skelEntry.size));
+            if (skelW3D.hierarchy) {
+              w3d.hierarchy = skelW3D.hierarchy;
+            }
+          } catch (e) { /* skip */ }
+        }
+      }
+    }
+
+    // Build HLOD mesh-to-pivot mapping
+    const meshPivotIdx = new Map();
+    if (w3d.hlod && w3d.hlod.lods.length > 0) {
+      const lod0 = w3d.hlod.lods[w3d.hlod.lods.length - 1];
+      for (const sub of lod0) {
+        const parts = sub.name.split('.');
+        const meshName = parts.length > 1 ? parts[1].toLowerCase() : parts[0].toLowerCase();
+        meshPivotIdx.set(meshName, sub.boneIdx);
+      }
+    }
+
+    // Build bone hierarchy as Three.js Object3D nodes
+    const boneNodes = [];
+    const innerGroup = new THREE.Group();
+    innerGroup.rotation.x = -Math.PI / 2;
+
+    if (w3d.hierarchy && w3d.hierarchy.pivots.length > 0) {
+      for (let i = 0; i < w3d.hierarchy.pivots.length; i++) {
+        const p = w3d.hierarchy.pivots[i];
+        const node = new THREE.Object3D();
+        node.name = p.name;
+        // Pivot 0 (RootTransform) is always identity in the game engine —
+        // Base_Update() overrides it with the model's world transform (htree.cpp:474).
+        // Its stored translation/rotation from the W3D file is not used at render time.
+        if (i > 0) {
+          node.position.set(p.translation[0], p.translation[1], p.translation[2]);
+          const q = p.rotation;
+          if (q[0] !== 0 || q[1] !== 0 || q[2] !== 0 || q[3] !== 1) {
+            node.quaternion.set(q[0], q[1], q[2], q[3]);
+          }
+        }
+        boneNodes.push(node);
+      }
+      // Parent each bone to its parent node
+      for (let i = 0; i < w3d.hierarchy.pivots.length; i++) {
+        const parentIdx = w3d.hierarchy.pivots[i].parentIdx;
+        if (parentIdx === 0xFFFFFFFF || parentIdx >= boneNodes.length) {
+          innerGroup.add(boneNodes[i]);
+        } else {
+          boneNodes[parentIdx].add(boneNodes[i]);
+        }
+      }
+    }
+
+    // Compute accumulated bone transforms for the bind pose (Base_Update equivalent).
+    // Pivot[0].Transform = identity; child transforms = parent.Transform * child.BaseTransform
+    const boneMats = [];
+    if (w3d.hierarchy) {
+      for (let i = 0; i < w3d.hierarchy.pivots.length; i++) {
+        const mat = new THREE.Matrix4();
+        if (i === 0) {
+          mat.identity();
+        } else {
+          const p = w3d.hierarchy.pivots[i];
+          const local = new THREE.Matrix4();
+          local.compose(
+            new THREE.Vector3(p.translation[0], p.translation[1], p.translation[2]),
+            new THREE.Quaternion(p.rotation[0], p.rotation[1], p.rotation[2], p.rotation[3]),
+            new THREE.Vector3(1, 1, 1)
+          );
+          const parentIdx = p.parentIdx;
+          if (parentIdx !== 0xFFFFFFFF && parentIdx < boneMats.length) {
+            mat.multiplyMatrices(boneMats[parentIdx], local);
+          } else {
+            mat.copy(local);
+          }
+        }
+        boneMats.push(mat);
+      }
+    }
+
+    let meshCount = 0;
+    for (const m of w3d.meshes) {
+      const mname = m.name.toLowerCase();
+      if (mname.includes('shadow') || mname.includes('collision') || mname.startsWith('box')) continue;
+      if (m.attrs & W3D_MESH_FLAG_HIDDEN) continue;
+
+      // Detect skin meshes and bake bone transforms into vertices
+      const isSkin = m.boneLinks && m.boneLinks.length > 0 &&
+        ((m.attrs & W3D_MESH_FLAG_GEOMETRY_TYPE_MASK) === W3D_MESH_FLAG_GEOMETRY_TYPE_SKIN ||
+         (m.attrs & W3D_MESH_FLAG_SKIN_LEGACY));
+      if (isSkin && boneMats.length > 0) {
+        const verts = m.vertices;
+        const norms = m.normals;
+        const links = m.boneLinks;
+        const tmpV = new THREE.Vector3();
+        const tmpN = new THREE.Vector3();
+        const normMat = new THREE.Matrix3();
+        for (let vi = 0; vi < links.length && vi * 3 + 2 < verts.length; vi++) {
+          const bi = links[vi];
+          if (bi < boneMats.length) {
+            tmpV.set(verts[vi*3], verts[vi*3+1], verts[vi*3+2]);
+            tmpV.applyMatrix4(boneMats[bi]);
+            verts[vi*3] = tmpV.x; verts[vi*3+1] = tmpV.y; verts[vi*3+2] = tmpV.z;
+            if (norms) {
+              normMat.getNormalMatrix(boneMats[bi]);
+              tmpN.set(norms[vi*3], norms[vi*3+1], norms[vi*3+2]);
+              tmpN.applyMatrix3(normMat).normalize();
+              norms[vi*3] = tmpN.x; norms[vi*3+1] = tmpN.y; norms[vi*3+2] = tmpN.z;
+            }
+          }
+        }
+      }
+
+      const isLightMesh = mname.includes('light') || mname.includes('glow') ||
+                          mname.includes('muzzle') || mname.includes('fxfire') ||
+                          mname.includes('flame') || mname.includes('beacon');
+      const mesh = w3dMeshToThreeJS(m);
+      if (mesh) {
+        mesh.castShadow = !isLightMesh && !mesh.userData.isPrelitUnlit;
+        mesh.receiveShadow = !isLightMesh;
+        mesh.userData.isLightMesh = isLightMesh;
+        if (isLightMesh) mesh.renderOrder = 100;
+
+        if (isSkin) {
+          // Skin vertices are already in model space after baking — add directly to innerGroup
+          innerGroup.add(mesh);
+        } else {
+          // Rigid mesh — attach to its bone in the hierarchy
+          const boneIdx = meshPivotIdx.get(mname);
+          if (boneIdx !== undefined && boneIdx < boneNodes.length) {
+            boneNodes[boneIdx].add(mesh);
+          } else {
+            innerGroup.add(mesh);
+          }
+        }
+        meshCount++;
+      }
+    }
+
+    const group = new THREE.Group();
+    group.add(innerGroup);
+
+    const result = meshCount > 0 ? group : null;
+    w3dModelCache.set(key, result);
+    return result;
+  } catch (e) {
+    console.warn('Failed to parse W3D:', w3dPath, e);
+    w3dModelCache.set(key, null);
+    return null;
+  }
+}
+
+// ─── W3D Index (for looking up models by name) ─────────────────────────
+
+const w3dFileIndex = new Map();
+
+function buildW3DIndex() {
+  w3dFileIndex.clear();
+  for (const [path] of bigFilePool) {
+    if (!path.endsWith('.w3d')) continue;
+    // Index by base filename without extension
+    const parts = path.split('/');
+    const basename = parts[parts.length - 1].replace(/\.w3d$/, '');
+    if (!w3dFileIndex.has(basename)) {
+      w3dFileIndex.set(basename, path);
+    }
+  }
+  console.log(`W3D index: ${w3dFileIndex.size} models available`);
+}
+
+// Object INI model map: object name (lowercase) → w3d model name (lowercase)
+const objectModelMap = new Map();
+// Object KindOf map: object name (lowercase) → Set of KindOf flags (uppercase)
+const objectKindOfMap = new Map();
+
+function parseObjectINIsFromPool() {
+  objectModelMap.clear();
+  const candidates = [];
+  for (const [path] of bigFilePool) {
+    if ((path.startsWith('data/ini/') && path.endsWith('.ini')) ||
+        (path.includes('object') && path.endsWith('.ini'))) {
+      candidates.push(path);
+    }
+  }
+  candidates.sort();
+  for (const path of candidates) {
+    const entry = bigFilePool.get(path);
+    if (!entry) continue;
+    try {
+      const bytes = new Uint8Array(entry.buffer, entry.offset, entry.size);
+      const text = new TextDecoder('ascii').decode(bytes);
+      parseObjectINI(text);
+    } catch (e) { /* skip unparseable files */ }
+  }
+  console.log(`Object INI: ${objectModelMap.size} object→model mappings, ${objectKindOfMap.size} KindOf entries`);
+}
+
+function parseObjectINI(text) {
+  const lines = text.split(/\r?\n/);
+  let currentObject = null;
+  let inDrawModule = false;
+  let inConditionState = false;
+  for (const raw of lines) {
+    const line = raw.replace(/;.*$/, '').replace(/\/\/.*$/, '').trim();
+    if (!line) continue;
+
+    const objMatch = line.match(/^Object\s+(\S+)/i);
+    if (objMatch) {
+      currentObject = objMatch[1].toLowerCase();
+      inDrawModule = false;
+      inConditionState = false;
+      continue;
+    }
+
+    if (!currentObject) continue;
+
+    if (/^End$/i.test(line)) {
+      if (inConditionState) { inConditionState = false; }
+      else if (inDrawModule) { inDrawModule = false; }
+      continue;
+    }
+
+    const kindMatch = line.match(/^\s*KindOf\s*=\s*(.+)/i);
+    if (kindMatch && !objectKindOfMap.has(currentObject)) {
+      const flags = new Set(kindMatch[1].trim().split(/\s+/).map(f => f.toUpperCase()));
+      objectKindOfMap.set(currentObject, flags);
+    }
+
+    if (/^\s*Draw\s*=\s*W3D/i.test(line)) { inDrawModule = true; continue; }
+    if (inDrawModule && /^\s*(?:Default)?ConditionState/i.test(line)) { inConditionState = true; continue; }
+    if (inDrawModule && inConditionState) {
+      const modelMatch = line.match(/^\s*Model\s*=\s*(\S+)/i);
+      if (modelMatch && !objectModelMap.has(currentObject)) {
+        objectModelMap.set(currentObject, modelMatch[1].toLowerCase());
+      }
+    }
+  }
+}
+
+const w3dLookupCache = new Map();
+
+function findW3DForObject(objectName) {
+  const lname = objectName.toLowerCase();
+  if (w3dLookupCache.has(lname)) return w3dLookupCache.get(lname);
+
+  let result = null;
+
+  // 1. Try INI mapping (most reliable)
+  const iniModel = objectModelMap.get(lname);
+  if (iniModel) {
+    const baseName = iniModel.includes('.') ? iniModel.split('.')[0] : iniModel;
+    result = w3dFileIndex.get(baseName);
+  }
+
+  // 2. Try direct name match
+  if (!result) result = w3dFileIndex.get(lname);
+
+  // 3. Common C&C naming conventions (AmericaVehicleHumvee → avhumvee)
+  if (!result) {
+    const prefixMap = { 'america': 'a', 'china': 'c', 'gla': 'g', 'civilian': 'c', 'europe': 'eu' };
+    const typeMap = { 'vehicle': 'v', 'infantry': 'i', 'structure': '', 'building': '', 'tech': '' };
+    for (const [prefix, abbr] of Object.entries(prefixMap)) {
+      if (!lname.startsWith(prefix)) continue;
+      let rest = lname.slice(prefix.length);
+      for (const [type, typeAbbr] of Object.entries(typeMap)) {
+        if (!rest.startsWith(type)) continue;
+        const modelPart = rest.slice(type.length);
+        const candidate = abbr + typeAbbr + modelPart;
+        if (w3dFileIndex.has(candidate)) { result = w3dFileIndex.get(candidate); break; }
+      }
+      if (result) break;
+      // Also try without type abbreviation
+      const candidate = abbr + rest;
+      if (w3dFileIndex.has(candidate)) { result = w3dFileIndex.get(candidate); break; }
+    }
+  }
+
+  // 4. Try partial match — search for W3D files containing the significant part of the name
+  if (!result) {
+    const significantPart = lname
+      .replace(/^(?:america|china|gla|civilian|europe)/, '')
+      .replace(/^(?:vehicle|infantry|structure|building)/, '');
+    if (significantPart.length >= 4) {
+      for (const [basename, path] of w3dFileIndex) {
+        if (basename.includes(significantPart)) { result = path; break; }
+      }
+    }
+  }
+
+  w3dLookupCache.set(lname, result);
+  return result;
+}
+
+// ─── Texture Atlas Builder ──────────────────────────────────────────────
+
+const TILE_SIZE = 64;
+
+function buildTextureAtlas(mapData) {
+  const bt = mapData.blendTileData;
+  if (!bt || bigFilePool.size === 0) return null;
+
+  const allTiles = []; // allTiles[baseTileIndex] = Uint8Array(64*64*4) or null
+  let maxTileIdx = 0;
+  let loadedCount = 0, missedCount = 0;
+
+  function loadTilesForClass(tc) {
+    const tgaPath = resolveTerrainTGA(tc.name);
+    if (!tgaPath) {
+      console.warn(`Texture not found for "${tc.name}" (tried INI mapping, exact, and fuzzy)`);
+      missedCount++;
+      return;
+    }
+
+    const tgaData = getFileData(tgaPath);
+    if (!tgaData) { missedCount++; return; }
+
+    let tga;
+    try { tga = parseTGA(tgaData); } catch (e) {
+      console.warn(`Failed to parse TGA ${tgaPath}:`, e);
+      return;
+    }
+
+    // TGA pixels are bottom-to-top. Split into 64x64 tiles.
+    // Tile ordering matches game: column + tilesPerRow * row (bottom-to-top, left-to-right)
+    const tilesX = Math.floor(tga.width / TILE_SIZE);
+    const tilesY = Math.floor(tga.height / TILE_SIZE);
+    const numTilesAvailable = Math.min(tilesX * tilesY, tc.numTiles);
+
+    for (let ty = 0; ty < tilesY && (ty * tilesX) < numTilesAvailable; ty++) {
+      for (let tx = 0; tx < tilesX && (ty * tilesX + tx) < numTilesAvailable; tx++) {
+        const localIdx = tx + tilesX * ty;
+        const globalIdx = tc.firstTile + localIdx;
+        const tilePixels = new Uint8Array(TILE_SIZE * TILE_SIZE * 4);
+
+        for (let row = 0; row < TILE_SIZE; row++) {
+          const srcRow = ty * TILE_SIZE + row; // row from bottom of TGA
+          const srcOff = (srcRow * tga.width + tx * TILE_SIZE) * 4;
+          const dstOff = row * TILE_SIZE * 4;
+          tilePixels.set(tga.pixels.subarray(srcOff, srcOff + TILE_SIZE * 4), dstOff);
+        }
+
+        allTiles[globalIdx] = tilePixels;
+        if (globalIdx > maxTileIdx) maxTileIdx = globalIdx;
+      }
+    }
+  }
+
+  for (const tc of bt.textureClasses) { loadTilesForClass(tc); loadedCount++; }
+  for (const tc of (bt.edgeTextureClasses || [])) { loadTilesForClass(tc); loadedCount++; }
+
+  console.log(`Texture classes: ${loadedCount - missedCount} loaded, ${missedCount} missing`);
+  if (maxTileIdx === 0) return null;
+
+  // Pack tiles into atlas (row 0 = bottom, matching OpenGL convention)
+  const numTiles = maxTileIdx + 1;
+  const tilesPerRow = Math.ceil(Math.sqrt(numTiles));
+  const atlasW = tilesPerRow * TILE_SIZE;
+  const atlasRows = Math.ceil(numTiles / tilesPerRow);
+  const atlasH = atlasRows * TILE_SIZE;
+  const atlasPixels = new Uint8Array(atlasW * atlasH * 4);
+
+  // Default fill (grey)
+  for (let i = 0; i < atlasPixels.length; i += 4) {
+    atlasPixels[i] = 128; atlasPixels[i+1] = 128; atlasPixels[i+2] = 96; atlasPixels[i+3] = 255;
+  }
+
+  const tilePositions = []; // tilePositions[baseTile] = { x, y } in atlas pixels (y from bottom)
+
+  for (let i = 0; i <= maxTileIdx; i++) {
+    const col = i % tilesPerRow;
+    const row = Math.floor(i / tilesPerRow);
+    const px = col * TILE_SIZE;
+    const py = row * TILE_SIZE; // measured from bottom of atlas
+    tilePositions[i] = { x: px, y: py };
+
+    if (allTiles[i]) {
+      for (let r = 0; r < TILE_SIZE; r++) {
+        const srcOff = r * TILE_SIZE * 4;
+        const dstOff = ((py + r) * atlasW + px) * 4;
+        atlasPixels.set(allTiles[i].subarray(srcOff, srcOff + TILE_SIZE * 4), dstOff);
+      }
+    }
+  }
+
+  console.log(`Atlas built: ${atlasW}x${atlasH}, ${numTiles} tiles, ${tilesPerRow} per row`);
+  return { atlasPixels, atlasW, atlasH, tilePositions };
+}
+
+// Get UV coordinates for a specific corner of a cell's tile quadrant in the atlas.
+// Corner order: 0=TL, 1=TR, 2=BR, 3=BL (same as vertex winding)
+function getQuadrantUV(tileNdx, corner, atlas) {
+  const baseTile = tileNdx >> 2;
+  const quadrant = tileNdx & 3;
+  const xSub = quadrant & 1;        // 0=left, 1=right
+  const ySub = (quadrant >> 1) & 1;  // 0=upper, 1=lower
+
+  const pos = atlas.tilePositions[baseTile];
+  if (!pos) return [0, 0];
+
+  const HALF = TILE_SIZE / 2; // 32
+  const qx = pos.x + (xSub ? HALF : 0);
+  // ySub=0 (upper visual half) → top 32 rows of tile → higher pixel Y (from bottom)
+  // ySub=1 (lower visual half) → bottom 32 rows → lower pixel Y
+  const qy = pos.y + (ySub ? 0 : HALF);
+
+  // Half-texel inset to prevent atlas bleeding with bilinear filtering
+  const ht = 0.5;
+  const minU = (qx + ht) / atlas.atlasW;
+  const maxU = (qx + HALF - ht) / atlas.atlasW;
+  const minV = (qy + ht) / atlas.atlasH;
+  const maxV = (qy + HALF - ht) / atlas.atlasH;
+
+  // Game convention: TL→(minU,maxV), TR→(maxU,maxV), BR→(maxU,minV), BL→(minU,minV)
+  switch (corner) {
+    case 0: return [minU, maxV]; // TL (north-west)
+    case 1: return [maxU, maxV]; // TR (north-east)
+    case 2: return [maxU, minV]; // BR (south-east)
+    case 3: return [minU, minV]; // BL (south-west)
+  }
+}
+
+// ─── Textured Terrain Shader ────────────────────────────────────────────
+
+// Matches the game's HeightMap::doTheLight():
+//   shade = ambient[0] + SUM_i( clamp(dot(-lightPos[i], normal), 0, 1) * diffuse[i] )
+//   per-channel clamped to [0,1]
+// lightPos is direction FROM the light; we negate it to get direction TO the light.
+// Only light[0] contributes ambient.
+const MAX_TERRAIN_LIGHTS = 3;
+
+function extractLightUniforms(lightingData) {
+  const defaults = {
+    ambient: { r: 0.5, g: 0.39, b: 0.30 },
+    diffuse: { r: 0.9, g: 0.71, b: 0.60 },
+    lightPos: { x: -0.96, y: 0.05, z: -0.29 },
+  };
+  const lights = lightingData?.terrainLights || [defaults];
+  const objLights = lightingData?.objectLights || lights;
+
+  const ambientColor = new THREE.Vector3(
+    lights[0].ambient.r, lights[0].ambient.g, lights[0].ambient.b
+  );
+
+  const numLights = Math.min(lights.length, MAX_TERRAIN_LIGHTS);
+  const diffuseColors = [];
+  const lightDirs = [];
+
+  for (let i = 0; i < MAX_TERRAIN_LIGHTS; i++) {
+    if (i < numLights) {
+      const lp = lights[i].lightPos;
+      const d = lights[i].diffuse;
+      diffuseColors.push(new THREE.Vector3(d.r, d.g, d.b));
+      // Game coords: (x,y) horizontal, z = height. lightPos = direction FROM light.
+      // Three.js: (x,z) horizontal, y = height. Our terrain flips game Y → -Z.
+      // Direction TO light: negate x and z(height), but game Y flips so Z = +lp.y
+      lightDirs.push(new THREE.Vector3(-lp.x, -lp.z, lp.y).normalize());
+    } else {
+      diffuseColors.push(new THREE.Vector3(0, 0, 0));
+      lightDirs.push(new THREE.Vector3(0, 1, 0));
+    }
+  }
+
+  // Object lights (for W3D models using MeshLambertMaterial)
+  const objNumLights = Math.min(objLights.length, MAX_TERRAIN_LIGHTS);
+  const objAmbientColor = new THREE.Vector3(
+    objLights[0].ambient.r, objLights[0].ambient.g, objLights[0].ambient.b
+  );
+  const objDiffuseColors = [];
+  const objLightDirs = [];
+  for (let i = 0; i < MAX_TERRAIN_LIGHTS; i++) {
+    if (i < objNumLights) {
+      const lp = objLights[i].lightPos;
+      const d = objLights[i].diffuse;
+      objDiffuseColors.push(new THREE.Vector3(d.r, d.g, d.b));
+      objLightDirs.push(new THREE.Vector3(-lp.x, -lp.z, lp.y).normalize());
+    } else {
+      objDiffuseColors.push(new THREE.Vector3(0, 0, 0));
+      objLightDirs.push(new THREE.Vector3(0, 1, 0));
+    }
+  }
+
+  return { ambientColor, diffuseColors, lightDirs, numLights,
+           objAmbientColor, objDiffuseColors, objLightDirs, objNumLights };
+}
+
+// Game uses SUN_DISTANCE_FROM_GROUND = 10000 for shadow ray origin
+const SUN_DISTANCE = 10000;
+
+function setupSceneLights(lightingData, playW, playH, minH, maxH) {
+  // Remove existing lights and shadow light targets
+  if (sunLight) {
+    scene.remove(sunLight.target);
+    if (sunLight.shadow?.map) { sunLight.shadow.map.dispose(); }
+  }
+  const oldLights = [];
+  scene.traverse(obj => {
+    if (obj.isAmbientLight || obj.isDirectionalLight) oldLights.push(obj);
+  });
+  oldLights.forEach(l => { scene.remove(l); l.dispose(); });
+  sunLight = null;
+
+  const lu = extractLightUniforms(lightingData);
+
+  // Use object lights for scene ambient/directional (affects W3D MeshLambertMaterial)
+  scene.add(new THREE.AmbientLight(
+    new THREE.Color(lu.objAmbientColor.x, lu.objAmbientColor.y, lu.objAmbientColor.z), 1.0
+  ));
+
+  // Map center for shadow camera target
+  const cx = (playW * MAP_XY_FACTOR) / 2;
+  const cz = (playH * MAP_XY_FACTOR) / 2;
+
+  // Shadow frustum tightly covers the map
+  const mapExtent = Math.max(playW, playH) * MAP_XY_FACTOR;
+  const halfExt = mapExtent * 0.55;
+
+  for (let i = 0; i < lu.objNumLights; i++) {
+    const dc = lu.objDiffuseColors[i];
+    const ld = lu.objLightDirs[i];
+    if (dc.x + dc.y + dc.z < 0.001) continue;
+
+    const dirLight = new THREE.DirectionalLight(new THREE.Color(dc.x, dc.y, dc.z), 1.0);
+
+    // Position sun at map center + lightDir * SUN_DISTANCE (matching game's approach)
+    // lightDir is direction TO the light, so position = center + lightDir * distance
+    dirLight.position.set(
+      cx + ld.x * SUN_DISTANCE,
+      ld.y * SUN_DISTANCE,
+      cz + ld.z * SUN_DISTANCE
+    );
+
+    // First light (sun) casts shadows
+    if (i === 0) {
+      dirLight.castShadow = true;
+      dirLight.shadow.mapSize.width = 4096;
+      dirLight.shadow.mapSize.height = 4096;
+      dirLight.shadow.camera.left = -halfExt;
+      dirLight.shadow.camera.right = halfExt;
+      dirLight.shadow.camera.top = halfExt;
+      dirLight.shadow.camera.bottom = -halfExt;
+      dirLight.shadow.camera.near = 1;
+      dirLight.shadow.camera.far = SUN_DISTANCE * 2;
+      dirLight.shadow.bias = 0;
+      dirLight.shadow.normalBias = 0;
+
+      dirLight.target.position.set(cx, 0, cz);
+      scene.add(dirLight.target);
+
+      sunLight = dirLight;
+    }
+
+    scene.add(dirLight);
+  }
+}
+
+function createTexturedMaterial(atlasTexture, lightingData) {
+  const lu = extractLightUniforms(lightingData);
+
+  const mat = new THREE.ShaderMaterial({
+    fog: true,
+    lights: true,
+    wireframe: false,
+    side: THREE.DoubleSide,
+    uniforms: THREE.UniformsUtils.merge([
+      THREE.UniformsLib.fog,
+      THREE.UniformsLib.lights,
+      {
+        terrainAtlas: { value: atlasTexture },
+        ambientColor: { value: lu.ambientColor },
+        numLights: { value: lu.numLights },
+        diffuseColor0: { value: lu.diffuseColors[0] },
+        diffuseColor1: { value: lu.diffuseColors[1] },
+        diffuseColor2: { value: lu.diffuseColors[2] },
+        lightDir0: { value: lu.lightDirs[0] },
+        lightDir1: { value: lu.lightDirs[1] },
+        lightDir2: { value: lu.lightDirs[2] },
+      }
+    ]),
+    vertexShader: `
+      attribute vec2 baseUV;
+      attribute vec2 blendUV;
+      attribute vec2 extraUV;
+      attribute float blendAlpha;
+      attribute float extraAlpha;
+
+      varying vec2 vBaseUV;
+      varying vec2 vBlendUV;
+      varying vec2 vExtraUV;
+      varying float vBlendAlpha;
+      varying float vExtraAlpha;
+      varying vec3 vNormal;
+      varying vec3 vWorldPos;
+
+      #include <common>
+      #include <fog_pars_vertex>
+      #include <shadowmap_pars_vertex>
+
+      void main() {
+        vBaseUV = baseUV;
+        vBlendUV = blendUV;
+        vExtraUV = extraUV;
+        vBlendAlpha = blendAlpha;
+        vExtraAlpha = extraAlpha;
+
+        vec3 transformedNormal = normalMatrix * normal;
+        vNormal = transformedNormal;
+
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vWorldPos = worldPosition.xyz;
+
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+
+        #include <shadowmap_vertex>
+        #include <fog_vertex>
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D terrainAtlas;
+      uniform vec3 ambientColor;
+      uniform int numLights;
+      uniform vec3 diffuseColor0;
+      uniform vec3 diffuseColor1;
+      uniform vec3 diffuseColor2;
+      uniform vec3 lightDir0;
+      uniform vec3 lightDir1;
+      uniform vec3 lightDir2;
+
+      varying vec2 vBaseUV;
+      varying vec2 vBlendUV;
+      varying vec2 vExtraUV;
+      varying float vBlendAlpha;
+      varying float vExtraAlpha;
+      varying vec3 vNormal;
+      varying vec3 vWorldPos;
+
+      #include <common>
+      #include <packing>
+      #include <fog_pars_fragment>
+      #include <shadowmap_pars_fragment>
+
+      void main() {
+        vec4 color = texture2D(terrainAtlas, vBaseUV);
+
+        if (vBlendAlpha > 0.01) {
+          vec4 blend = texture2D(terrainAtlas, vBlendUV);
+          color = mix(color, blend, vBlendAlpha);
+        }
+        if (vExtraAlpha > 0.01) {
+          vec4 extra = texture2D(terrainAtlas, vExtraUV);
+          color = mix(color, extra, vExtraAlpha);
+        }
+
+        vec3 n = normalize(vNormal);
+
+        // Compute shadow from the first directional light
+        float shadow = 1.0;
+        #if NUM_DIR_LIGHT_SHADOWS > 0
+          DirectionalLightShadow dirShadow = directionalLightShadows[0];
+          float s = getShadow(
+            directionalShadowMap[0],
+            dirShadow.shadowMapSize,
+            dirShadow.shadowBias,
+            dirShadow.shadowRadius,
+            vDirectionalShadowCoord[0]
+          );
+          shadow = s;
+        #endif
+
+        // Game formula: start with ambient from light 0 only
+        vec3 shade = ambientColor;
+
+        // Add diffuse from light 0, modulated by shadow
+        float NdotL;
+        NdotL = clamp(dot(n, lightDir0), 0.0, 1.0);
+        shade += diffuseColor0 * NdotL * shadow;
+
+        if (numLights > 1) {
+          NdotL = clamp(dot(n, lightDir1), 0.0, 1.0);
+          shade += diffuseColor1 * NdotL;
+        }
+        if (numLights > 2) {
+          NdotL = clamp(dot(n, lightDir2), 0.0, 1.0);
+          shade += diffuseColor2 * NdotL;
+        }
+
+        // Per-channel clamp to [0,1] (matches game)
+        shade = clamp(shade, 0.0, 1.0);
+
+        gl_FragColor = vec4(color.rgb * shade, 1.0);
+
+        #include <fog_fragment>
+      }
+    `,
+  });
+  return mat;
+}
+
+// ─── Three.js Scene ─────────────────────────────────────────────────────
+
+let renderer, scene, camera;
+let terrainMesh, terrainGeo, terrainMatColored, terrainMatTextured;
+let objectMarkers = new THREE.Group();
+let roadMesh = null;
+let waterPlane;
+let sunLight = null;
+let currentMapData = null;
+let currentHeightScale = 1.0;
+let colorMode = 'terrain';
+let terrainAtlas = null;
+let terrainAtlasTex = null;
+
+function initThree() {
+  const canvas = document.getElementById('canvas');
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x6b8cae);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.BasicShadowMap;
+  renderer.toneMapping = THREE.NoToneMapping;
+  renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+
+  scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x6b8cae, 0.00012);
+
+  camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1, 50000);
+
+  initGeneralsCamera(renderer.domElement);
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  animate();
+}
+
+// ─── Generals-Style Camera Controller ────────────────────────────────────
+
+const CAM_DEFAULT_PITCH = -37 * Math.PI / 180;
+const CAM_MIN_PITCH     = -Math.PI / 5;
+const CAM_MAX_PITCH     = -5 * Math.PI / 180;
+const CAM_MIN_HEIGHT    = 5;
+const CAM_MAX_HEIGHT    = 800;
+const CAM_DEFAULT_HEIGHT = 250;
+const CAM_ZOOM_STEP     = 20;
+const CAM_ROTATE_FACTOR = 0.005;
+const CAM_PAN_SPEED     = 1.5;
+const CAM_KEY_SCROLL    = 8;
+const CAM_EDGE_SIZE     = 3;
+const CAM_EDGE_SPEED    = 0.3;
+const CAM_DAMPING       = 0.85;
+
+const camState = {
+  target: new THREE.Vector3(),
+  yaw: Math.PI * 0.75,
+  pitch: CAM_DEFAULT_PITCH,
+  height: CAM_DEFAULT_HEIGHT,
+  velocity: new THREE.Vector3(),
+  isPanning: false,
+  isRotating: false,
+  middleDown: false,
+  panAnchor: { x: 0, y: 0 },
+  rotAnchor: { x: 0, y: 0 },
+  rotAnchorYaw: 0,
+  rotAnchorPitch: 0,
+  keys: {},
+  mousePos: { x: 0, y: 0 },
+  isDragSelecting: false,
+  dragStart: { x: 0, y: 0 },
+  dragEnd: { x: 0, y: 0 },
+  edgeScrollEnabled: false,
+};
+
+let selectionOverlay = null;
+
+function initGeneralsCamera(domElement) {
+  domElement.addEventListener('contextmenu', e => e.preventDefault());
+
+  domElement.addEventListener('mousedown', e => {
+    if (e.button === 2) {
+      camState.isPanning = true;
+      camState.panAnchor = { x: e.clientX, y: e.clientY };
+    } else if (e.button === 1) {
+      e.preventDefault();
+      camState.middleDown = true;
+      camState.isRotating = true;
+      camState.rotAnchor = { x: e.clientX, y: e.clientY };
+      camState.rotAnchorYaw = camState.yaw;
+      camState.rotAnchorPitch = camState.pitch;
+    } else if (e.button === 0) {
+      camState.isDragSelecting = true;
+      camState.dragStart = { x: e.clientX, y: e.clientY };
+      camState.dragEnd = { x: e.clientX, y: e.clientY };
+      showSelectionRect(false);
+    }
+  });
+
+  window.addEventListener('mousemove', e => {
+    camState.mousePos = { x: e.clientX, y: e.clientY };
+    if (camState.isPanning) {
+      const dx = e.clientX - camState.panAnchor.x;
+      const dy = e.clientY - camState.panAnchor.y;
+      camState.panAnchor = { x: e.clientX, y: e.clientY };
+      const panScale = camState.height * CAM_PAN_SPEED / window.innerHeight;
+      const sinY = Math.sin(camState.yaw), cosY = Math.cos(camState.yaw);
+      camState.target.x -= (dx * cosY + dy * sinY) * panScale;
+      camState.target.z -= (-dx * sinY + dy * cosY) * panScale;
+    }
+    if (camState.isRotating) {
+      const dx = e.clientX - camState.rotAnchor.x;
+      camState.yaw = camState.rotAnchorYaw - dx * CAM_ROTATE_FACTOR;
+    }
+    if (camState.isDragSelecting) {
+      camState.dragEnd = { x: e.clientX, y: e.clientY };
+      const dx = Math.abs(camState.dragEnd.x - camState.dragStart.x);
+      const dy = Math.abs(camState.dragEnd.y - camState.dragStart.y);
+      if (dx > 4 || dy > 4) showSelectionRect(true);
+    }
+  });
+
+  window.addEventListener('mouseup', e => {
+    if (e.button === 2) camState.isPanning = false;
+    if (e.button === 1) {
+      camState.middleReleaseTime = performance.now();
+      camState.middleDown = false;
+      if (!camState.isRotating) return;
+      camState.isRotating = false;
+      const dx = Math.abs(e.clientX - camState.rotAnchor.x);
+      const dy = Math.abs(e.clientY - camState.rotAnchor.y);
+      if (dx < 3 && dy < 3) {
+        camState.pitch = CAM_DEFAULT_PITCH;
+        camState.yaw = Math.PI * 0.75;
+        camState.height = CAM_DEFAULT_HEIGHT;
+      }
+    }
+    if (e.button === 0) {
+      camState.isDragSelecting = false;
+      showSelectionRect(false);
+    }
+  });
+
+  domElement.addEventListener('wheel', e => {
+    e.preventDefault();
+    // Suppress zoom when middle button is physically held (bit 2 = button 4)
+    // Mirrors Generals source: WM_MOUSEWHEEL and WM_MBUTTONDOWN are independent,
+    // but browsers can bleed wheel events from the physical click.
+    if ((e.buttons & 4) || camState.middleDown ||
+        (performance.now() - (camState.middleReleaseTime || 0)) < 150) return;
+    const delta = e.deltaY > 0 ? CAM_ZOOM_STEP : -CAM_ZOOM_STEP;
+    const zoomScale = Math.max(0.5, camState.height / 200);
+    camState.height = Math.max(CAM_MIN_HEIGHT, Math.min(CAM_MAX_HEIGHT,
+      camState.height + delta * zoomScale));
+  }, { passive: false });
+
+  window.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    camState.keys[e.code] = true;
+  });
+  window.addEventListener('keyup', e => { camState.keys[e.code] = false; });
+
+  // Selection overlay canvas
+  selectionOverlay = document.createElement('canvas');
+  selectionOverlay.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;display:none;z-index:100;';
+  document.body.appendChild(selectionOverlay);
+}
+
+const SEL_GRID_SIZE = 24;
+const SEL_FADE_SPEED_IN  = 0.8;
+const SEL_FADE_SPEED_OUT = 0.5;
+const SEL_MAX_ALPHA = 0.35;
+const selCellAlpha = new Map();
+let selLastTime = 0;
+
+const SEL_TECH_INTERVAL = 120;
+const SEL_TECH_FONT = '7px monospace';
+let selTechItems = [];
+let selTechLastGen = 0;
+
+function genTechSnippet() {
+  const types = [
+    () => `0x${(Math.random()*0xFFFFFF|0).toString(16).toUpperCase().padStart(6,'0')}`,
+    () => `${(Math.random()*360|0)}.${(Math.random()*100|0).toString().padStart(2,'0')}\u00B0`,
+    () => `R:${(Math.random()*999|0).toString().padStart(3,'0')}`,
+    () => `${(Math.random()*100|0).toFixed(0)}%`,
+    () => `ID:${(Math.random()*9999|0).toString().padStart(4,'0')}`,
+    () => `T+${(Math.random()*99|0).toFixed(0)}s`,
+    () => `${(Math.random()*255|0)}.${(Math.random()*255|0)}.${(Math.random()*255|0)}`,
+    () => `SIG ${(Math.random()*10).toFixed(2)}`,
+    () => `BRG ${(Math.random()*360|0)}`,
+    () => `${String.fromCharCode(65+Math.random()*26|0)}${String.fromCharCode(65+Math.random()*26|0)}-${(Math.random()*99|0)}`,
+    () => `DST ${(Math.random()*500|0)}m`,
+    () => `PWR ${(Math.random()*100|0).toFixed(0)}kW`,
+    () => `FRQ ${(20+Math.random()*80|0).toFixed(0)}MHz`,
+    () => `ALT ${(Math.random()*200|0)}`,
+    () => `VEL ${(Math.random()*60|0).toFixed(1)}`,
+  ];
+  return types[Math.random() * types.length | 0]();
+}
+
+function generateTechData(x1, y1, x2, y2, now) {
+  if (now - selTechLastGen < SEL_TECH_INTERVAL) return;
+  selTechLastGen = now;
+
+  const w = x2 - x1, h = y2 - y1;
+  if (w < 30 || h < 30) return;
+
+  const edge = Math.random() * 4 | 0;
+  let tx, ty, align;
+  const margin = 4;
+  switch (edge) {
+    case 0: tx = x1 + Math.random() * w; ty = y1 - margin; align = 'bottom'; break;
+    case 1: tx = x1 + Math.random() * w; ty = y2 + margin; align = 'top'; break;
+    case 2: tx = x1 - margin; ty = y1 + Math.random() * h; align = 'right'; break;
+    case 3: tx = x2 + margin; ty = y1 + Math.random() * h; align = 'left'; break;
+  }
+
+  selTechItems.push({
+    text: genTechSnippet(),
+    x: tx, y: ty, align,
+    born: now,
+    life: 800 + Math.random() * 1200,
+  });
+
+  if (selTechItems.length > 18) selTechItems.shift();
+}
+
+function drawTechData(ctx, now) {
+  ctx.font = SEL_TECH_FONT;
+  selTechItems = selTechItems.filter(item => {
+    const age = now - item.born;
+    if (age > item.life) return false;
+
+    const fadeIn = Math.min(1, age / 200);
+    const fadeOut = Math.max(0, 1 - (age - (item.life - 300)) / 300);
+    const alpha = Math.min(fadeIn, fadeOut) * 0.7;
+    if (alpha <= 0) return false;
+
+    ctx.fillStyle = `rgba(51, 255, 51, ${alpha.toFixed(3)})`;
+    switch (item.align) {
+      case 'bottom': ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; break;
+      case 'top':    ctx.textAlign = 'center'; ctx.textBaseline = 'top'; break;
+      case 'right':  ctx.textAlign = 'right';  ctx.textBaseline = 'middle'; break;
+      case 'left':   ctx.textAlign = 'left';   ctx.textBaseline = 'middle'; break;
+    }
+    ctx.fillText(item.text, item.x, item.y);
+    return true;
+  });
+}
+
+function showSelectionRect(show) {
+  if (!selectionOverlay) return;
+  if (!show) {
+    selectionOverlay.style.display = 'none';
+    selCellAlpha.clear();
+    selLastTime = 0;
+    selTechItems = [];
+    selTechLastGen = 0;
+    return;
+  }
+
+  const x1 = Math.min(camState.dragStart.x, camState.dragEnd.x);
+  const y1 = Math.min(camState.dragStart.y, camState.dragEnd.y);
+  const x2 = Math.max(camState.dragStart.x, camState.dragEnd.x);
+  const y2 = Math.max(camState.dragStart.y, camState.dragEnd.y);
+  const w = x2 - x1, h = y2 - y1;
+  if (w < 2 || h < 2) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const cw = window.innerWidth, ch = window.innerHeight;
+  selectionOverlay.width = cw * dpr;
+  selectionOverlay.height = ch * dpr;
+  selectionOverlay.style.width = cw + 'px';
+  selectionOverlay.style.height = ch + 'px';
+  selectionOverlay.style.display = 'block';
+
+  const ctx = selectionOverlay.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cw, ch);
+
+  // Project sampled mesh vertices for selectable units (vehicles + infantry) only
+  const objScreenPoints = [];
+  if (camera && objectMarkers.visible) {
+    const tmpV = new THREE.Vector3();
+    objectMarkers.children.forEach(child => {
+      if (!child.visible) return;
+      const k = child.userData?.kindOf;
+      const name = (child.userData?.name || '').toLowerCase();
+      const isUnit = k
+        ? (k.has('VEHICLE') || k.has('INFANTRY') || k.has('AIRCRAFT') || k.has('HUGE_VEHICLE'))
+        : (name.includes('vehicle') || name.includes('infantry') || name.includes('tank') ||
+           name.includes('humvee') || name.includes('soldier') || name.includes('ranger') ||
+           name.includes('missile') || name.includes('raptor') || name.includes('comanche') ||
+           name.includes('crusader') || name.includes('paladin') || name.includes('ambulance'));
+      if (!isUnit) return;
+      child.traverse(node => {
+        if (!node.isMesh || !node.geometry) return;
+        const pos = node.geometry.attributes.position;
+        if (!pos) return;
+        const step = Math.max(1, Math.floor(pos.count / 24));
+        for (let i = 0; i < pos.count; i += step) {
+          tmpV.set(pos.getX(i), pos.getY(i), pos.getZ(i));
+          node.localToWorld(tmpV);
+          tmpV.project(camera);
+          if (tmpV.z > 0 && tmpV.z < 1) {
+            objScreenPoints.push(
+              (tmpV.x * 0.5 + 0.5) * cw,
+              (-tmpV.y * 0.5 + 0.5) * ch
+            );
+          }
+        }
+      });
+    });
+  }
+
+  const now = performance.now();
+  const dt = selLastTime ? Math.min((now - selLastTime) / 1000, 0.1) : 0.016;
+  selLastTime = now;
+
+  const gs = SEL_GRID_SIZE;
+  const cols = Math.ceil(w / gs), rows = Math.ceil(h / gs);
+
+  // Pre-compute which grid cells contain projected vertices
+  const occupiedCells = new Set();
+  for (let i = 0; i < objScreenPoints.length; i += 2) {
+    const sx = objScreenPoints[i], sy = objScreenPoints[i + 1];
+    if (sx < x1 || sx >= x2 || sy < y1 || sy >= y2) continue;
+    const gx = Math.floor((sx - x1) / gs);
+    const gy = Math.floor((sy - y1) / gs);
+    occupiedCells.add(`${gx},${gy}`);
+  }
+
+  const activeKeys = new Set();
+
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      const cx = x1 + gx * gs;
+      const cy = y1 + gy * gs;
+      const cw2 = Math.min(gs, x2 - cx);
+      const ch2 = Math.min(gs, y2 - cy);
+
+      const hasObject = occupiedCells.has(`${gx},${gy}`);
+
+      const key = `${gx},${gy}`;
+      activeKeys.add(key);
+      let alpha = selCellAlpha.get(key) || 0;
+      alpha = hasObject
+        ? Math.min(SEL_MAX_ALPHA, alpha + SEL_FADE_SPEED_IN * dt)
+        : Math.max(0, alpha - SEL_FADE_SPEED_OUT * dt);
+      selCellAlpha.set(key, alpha);
+
+      if (alpha > 0.001) {
+        ctx.fillStyle = `rgba(51, 255, 51, ${alpha.toFixed(3)})`;
+        ctx.fillRect(cx, cy, cw2, ch2);
+      }
+
+      ctx.strokeStyle = 'rgba(51, 255, 51, 0.3)';
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(cx + 0.5, cy + 0.5, cw2 - 1, ch2 - 1);
+    }
+  }
+
+  // Clean up cells no longer in the grid (selection resized smaller)
+  for (const k of selCellAlpha.keys()) {
+    if (!activeKeys.has(k)) selCellAlpha.delete(k);
+  }
+
+  // Outer selection border (game's drawOpenRect: 2px, 0x9933FF33)
+  ctx.strokeStyle = 'rgba(51, 255, 51, 0.6)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x1, y1, w, h);
+
+  // Small tech readouts along the selection edges
+  generateTechData(x1, y1, x2, y2, now);
+  drawTechData(ctx, now);
+}
+
+// ─── Generals-Style Cursors ──────────────────────────────────────────────
+// Matches the game's cursor set: gold arrow, 8-direction scroll, crosshair select
+
+function makeSvgCursor(svg, hotX, hotY) {
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${hotX} ${hotY}, auto`;
+}
+
+const generalsCursors = (() => {
+  // Generals arrow: golden military pointer with dark olive outline and inner highlight
+  const arrowSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+    <defs><linearGradient id="ag" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f0d060"/><stop offset="50%" stop-color="#c89820"/>
+      <stop offset="100%" stop-color="#8a6810"/></linearGradient></defs>
+    <path d="M3 1 L3 27 L8.5 21 L14 30 L18 28 L12.5 19 L20 19 Z" fill="url(#ag)" stroke="#1a1400" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M5 5 L5 23 L9 19 L13.5 26.5 L15.5 25.5 L11 18 L17 18 Z" fill="none" stroke="rgba(255,240,180,0.4)" stroke-width="0.5"/>
+  </svg>`;
+
+  // Generals select crosshair: green targeting reticle (color 0x9933FF33 = rgba(51,255,51,0.6))
+  const selectSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+    <line x1="16" y1="1" x2="16" y2="11" stroke="#33ff33" stroke-width="2" opacity="0.8"/>
+    <line x1="16" y1="21" x2="16" y2="31" stroke="#33ff33" stroke-width="2" opacity="0.8"/>
+    <line x1="1" y1="16" x2="11" y2="16" stroke="#33ff33" stroke-width="2" opacity="0.8"/>
+    <line x1="21" y1="16" x2="31" y2="16" stroke="#33ff33" stroke-width="2" opacity="0.8"/>
+    <circle cx="16" cy="16" r="1.5" fill="none" stroke="#33ff33" stroke-width="1" opacity="0.8"/>
+  </svg>`;
+
+  // Generals scroll arrows: golden directional arrows with dark outline
+  function scrollSvg(angle) {
+    const cx = 16, cy = 16;
+    const rad = angle * Math.PI / 180;
+    const c = Math.cos(rad), s = Math.sin(rad);
+    // Arrow shaft
+    const sx = cx - c * 6, sy = cy - s * 6;
+    const ex = cx + c * 3, ey = cy + s * 3;
+    // Arrowhead triangle
+    const tipX = cx + c * 13, tipY = cy + s * 13;
+    const hb = 6;
+    const bx = cx + c * 3, by = cy + s * 3;
+    const lx = bx + (-s) * hb, ly = by + c * hb;
+    const rx = bx - (-s) * hb, ry = by - c * hb;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+      <defs><linearGradient id="sg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#f0d060"/><stop offset="100%" stop-color="#a07818"/></linearGradient></defs>
+      <line x1="${sx.toFixed(1)}" y1="${sy.toFixed(1)}" x2="${ex.toFixed(1)}" y2="${ey.toFixed(1)}" stroke="#1a1400" stroke-width="5" stroke-linecap="round"/>
+      <line x1="${sx.toFixed(1)}" y1="${sy.toFixed(1)}" x2="${ex.toFixed(1)}" y2="${ey.toFixed(1)}" stroke="url(#sg)" stroke-width="3" stroke-linecap="round"/>
+      <polygon points="${tipX.toFixed(1)},${tipY.toFixed(1)} ${lx.toFixed(1)},${ly.toFixed(1)} ${rx.toFixed(1)},${ry.toFixed(1)}" fill="url(#sg)" stroke="#1a1400" stroke-width="1.5" stroke-linejoin="round"/>
+    </svg>`;
+  }
+
+  // 8 directions: E=0, SE=45, S=90, SW=135, W=180, NW=225, N=270, NE=315
+  const scrollAngles = [0, 45, 90, 135, 180, 225, 270, 315];
+  const scrollCursors = scrollAngles.map(a => makeSvgCursor(scrollSvg(a), 16, 16));
+
+  return {
+    arrow: makeSvgCursor(arrowSvg, 3, 1),
+    select: makeSvgCursor(selectSvg, 16, 16),
+    scroll: scrollCursors,
+  };
+})();
+
+let currentCursorName = '';
+function updateCursor(canvas) {
+  if (!canvas) return;
+  let name;
+  if (camState.isPanning || camState.isRotating) {
+    // During RMB pan or middle-button rotate, use scroll direction cursor
+    const mp = camState.mousePos;
+    const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+    const dx = mp.x - cx, dy = mp.y - cy;
+    const theta = ((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360;
+    const dirIdx = Math.round(theta / 45) % 8;
+    name = 'scroll' + dirIdx;
+    if (name !== currentCursorName) {
+      canvas.style.cursor = generalsCursors.scroll[dirIdx];
+      currentCursorName = name;
+    }
+    return;
+  }
+  if (camState.isDragSelecting) {
+    name = 'select';
+  } else {
+    // Check edge scroll direction
+    let edgeDir = -1;
+    if (camState.edgeScrollEnabled) {
+      const w = window.innerWidth, h = window.innerHeight;
+      const mp = camState.mousePos;
+      let ex = 0, ey = 0;
+      if (mp.x <= CAM_EDGE_SIZE) ex = -1;
+      if (mp.x >= w - CAM_EDGE_SIZE) ex = 1;
+      if (mp.y <= CAM_EDGE_SIZE) ey = -1;
+      if (mp.y >= h - CAM_EDGE_SIZE) ey = 1;
+      if (ex !== 0 || ey !== 0) {
+        const theta = ((Math.atan2(ey, ex) * 180 / Math.PI) + 360) % 360;
+        edgeDir = Math.round(theta / 45) % 8;
+      }
+    }
+    if (edgeDir >= 0) {
+      name = 'scroll' + edgeDir;
+      if (name !== currentCursorName) {
+        canvas.style.cursor = generalsCursors.scroll[edgeDir];
+        currentCursorName = name;
+      }
+      return;
+    }
+    name = 'arrow';
+  }
+  if (name !== currentCursorName) {
+    canvas.style.cursor = name === 'select' ? generalsCursors.select : generalsCursors.arrow;
+    currentCursorName = name;
+  }
+}
+
+function updateGeneralsCamera() {
+  const k = camState.keys;
+  let mx = 0, mz = 0;
+
+  // Keyboard scrolling (WASD + arrows)
+  if (k['KeyW'] || k['ArrowUp'])    mz -= 1;
+  if (k['KeyS'] || k['ArrowDown'])  mz += 1;
+  if (k['KeyA'] || k['ArrowLeft'])  mx -= 1;
+  if (k['KeyD'] || k['ArrowRight']) mx += 1;
+
+  // Edge scrolling (separate from keyboard so it can use a different speed)
+  let edgeMx = 0, edgeMz = 0;
+  if (camState.edgeScrollEnabled) {
+    const w = window.innerWidth, h = window.innerHeight;
+    const mp = camState.mousePos;
+    if (mp.x <= CAM_EDGE_SIZE)     edgeMx -= 1;
+    if (mp.x >= w - CAM_EDGE_SIZE) edgeMx += 1;
+    if (mp.y <= CAM_EDGE_SIZE)     edgeMz -= 1;
+    if (mp.y >= h - CAM_EDGE_SIZE) edgeMz += 1;
+  }
+
+  if (mx !== 0 || mz !== 0 || edgeMx !== 0 || edgeMz !== 0) {
+    const scrollSpeed = CAM_KEY_SCROLL * (camState.height / 200);
+    const sinY = Math.sin(camState.yaw), cosY = Math.cos(camState.yaw);
+    const totalMx = mx + edgeMx * CAM_EDGE_SPEED;
+    const totalMz = mz + edgeMz * CAM_EDGE_SPEED;
+    camState.velocity.x += (totalMx * cosY + totalMz * sinY) * scrollSpeed;
+    camState.velocity.z += (-totalMx * sinY + totalMz * cosY) * scrollSpeed;
+  }
+
+  camState.target.add(camState.velocity);
+  camState.velocity.multiplyScalar(CAM_DAMPING);
+
+  // Build camera position from target + spherical offset
+  const dist = camState.height / Math.sin(-camState.pitch);
+  const horizDist = dist * Math.cos(-camState.pitch);
+  camera.position.set(
+    camState.target.x + Math.sin(camState.yaw) * horizDist,
+    camState.target.y + camState.height,
+    camState.target.z + Math.cos(camState.yaw) * horizDist
+  );
+  camera.lookAt(camState.target);
+
+  updateCursor(renderer?.domElement);
+
+  // Continuously redraw selection grid while drag-selecting (for pulse animation)
+  if (camState.isDragSelecting) {
+    const dx = Math.abs(camState.dragEnd.x - camState.dragStart.x);
+    const dy = Math.abs(camState.dragEnd.y - camState.dragStart.y);
+    if (dx > 4 || dy > 4) showSelectionRect(true);
+  }
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  updateGeneralsCamera();
+  renderer.render(scene, camera);
+}
+
+// Compute per-corner blend alphas from a TBlendTileInfo record.
+// Corner order: [0]=TL(gx,gy), [1]=TR(gx+1,gy), [2]=BR(gx+1,gy+1), [3]=BL(gx,gy+1)
+function computeBlendAlphas(bi) {
+  const a = [0, 0, 0, 0];
+  if (bi.horiz) {
+    if (bi.inverted & 1) { a[0] = 255; a[3] = 255; }
+    else                  { a[1] = 255; a[2] = 255; }
+  }
+  if (bi.vert) {
+    if (bi.inverted & 1) { a[0] = 255; a[1] = 255; }
+    else                  { a[2] = 255; a[3] = 255; }
+  }
+  if (bi.rightDiagonal) {
+    if (bi.inverted & 1) {
+      a[1] = 255;
+      if (bi.longDiagonal) { a[0] = 255; a[2] = 255; }
+    } else {
+      a[2] = 255;
+      if (bi.longDiagonal) { a[1] = 255; a[3] = 255; }
+    }
+  }
+  if (bi.leftDiagonal) {
+    if (bi.inverted & 1) {
+      a[0] = 255;
+      if (bi.longDiagonal) { a[1] = 255; a[3] = 255; }
+    } else {
+      a[3] = 255;
+      if (bi.longDiagonal) { a[0] = 255; a[2] = 255; }
+    }
+  }
+  if (bi.customBlendEdgeClass >= 0) { a[0] = a[1] = a[2] = a[3] = 0; }
+  return a;
+}
+
+// Resolve tileNdx → texture class color
+function colorForTileNdx(tileNdx, bt, outColor) {
+  const baseTile = tileNdx >> 2;
+  for (const tc of bt.textureClasses) {
+    if (tc.firstTile < 0) continue;
+    if (baseTile >= tc.firstTile && baseTile < tc.firstTile + tc.numTiles) {
+      outColor.setHex(getTerrainColor(tc.name));
+      const variation = ((tileNdx & 3) - 1.5) * 0.015;
+      outColor.r = Math.max(0, Math.min(1, outColor.r + variation));
+      outColor.g = Math.max(0, Math.min(1, outColor.g + variation));
+      outColor.b = Math.max(0, Math.min(1, outColor.b + variation));
+      return;
+    }
+  }
+  outColor.setHex(0x808060);
+}
+
+function buildTerrain(mapData) {
+  currentMapData = mapData;
+  const hm = mapData.heightMap;
+  if (!hm) throw new Error('No heightmap data found in map file');
+
+  // Clear previous
+  if (terrainMesh) {
+    scene.remove(terrainMesh);
+    terrainMesh.geometry.dispose();
+    terrainMesh.material.dispose();
+  }
+  if (terrainMatColored) { terrainMatColored.dispose(); terrainMatColored = null; }
+  if (terrainMatTextured) { terrainMatTextured.dispose(); terrainMatTextured = null; }
+  if (terrainAtlasTex) { terrainAtlasTex.dispose(); terrainAtlasTex = null; }
+  terrainAtlas = null;
+  scene.remove(objectMarkers);
+  objectMarkers.traverse(child => {
+    if (child.geometry) child.geometry.dispose();
+    if (child.material) {
+      if (child.material.map) child.material.map.dispose();
+      child.material.dispose();
+    }
+  });
+  objectMarkers = new THREE.Group();
+  w3dModelCache.clear();
+  w3dTextureCache.clear();
+  w3dLookupCache.clear();
+  if (roadMesh) {
+    scene.remove(roadMesh);
+    roadMesh.traverse(child => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) {
+        if (child.material.map) child.material.map.dispose();
+        child.material.dispose();
+      }
+    });
+    roadMesh = null;
+  }
+  if (waterPlane) { scene.remove(waterPlane); waterPlane.geometry.dispose(); waterPlane.material.dispose(); waterPlane = null; }
+  while (scene.children.length > 0) scene.remove(scene.children[0]);
+
+  const width = hm.width;
+  const height = hm.height;
+  const border = hm.borderSize;
+  const bt = mapData.blendTileData;
+
+  // Build texture atlas if BIG files have been loaded
+  if (bigFilePool.size > 0 && bt) {
+    terrainAtlas = buildTextureAtlas(mapData);
+    if (terrainAtlas) {
+      terrainAtlasTex = new THREE.DataTexture(
+        terrainAtlas.atlasPixels, terrainAtlas.atlasW, terrainAtlas.atlasH, THREE.RGBAFormat
+      );
+      terrainAtlasTex.flipY = false;
+      terrainAtlasTex.magFilter = THREE.LinearFilter;
+      terrainAtlasTex.minFilter = THREE.LinearMipmapLinearFilter;
+      terrainAtlasTex.generateMipmaps = true;
+      terrainAtlasTex.needsUpdate = true;
+    }
+  }
+
+  const cellsX = width - 1;
+  const cellsY = height - 1;
+  const numCells = cellsX * cellsY;
+
+  // 4 non-shared vertices per cell: TL, TR, BR, BL
+  const vertCount = numCells * 4;
+  const positions = new Float32Array(vertCount * 3);
+  const colors = new Float32Array(vertCount * 3);
+  const indices = new Uint32Array(numCells * 6);
+
+  // UV and alpha attributes for textured mode
+  const baseUVs = new Float32Array(vertCount * 2);
+  const blendUVs = new Float32Array(vertCount * 2);
+  const extraUVs = new Float32Array(vertCount * 2);
+  const blendAlphaArr = new Float32Array(vertCount);
+  const extraAlphaArr = new Float32Array(vertCount);
+
+  let minH = 255, maxH = 0;
+  for (let i = 0; i < hm.data.length; i++) {
+    if (hm.data[i] < minH) minH = hm.data[i];
+    if (hm.data[i] > maxH) maxH = hm.data[i];
+  }
+
+  const baseColor = new THREE.Color();
+  const blendColor = new THREE.Color();
+  const extraColor = new THREE.Color();
+  const cornerColor = new THREE.Color();
+  const cornerGx = [0, 1, 1, 0];
+  const cornerGy = [0, 0, 1, 1];
+
+  for (let cy = 0; cy < cellsY; cy++) {
+    for (let cx = 0; cx < cellsX; cx++) {
+      const cellIdx = cy * cellsX + cx;
+      const vi = cellIdx * 4;
+
+      for (let c = 0; c < 4; c++) {
+        const gx = cx + cornerGx[c];
+        const gy = cy + cornerGy[c];
+        const hi = gy * width + gx;
+        const heightVal = hm.data[hi];
+        const v = (vi + c) * 3;
+        positions[v]     = (gx - border) * MAP_XY_FACTOR;
+        positions[v + 1] = heightVal * MAP_HEIGHT_SCALE;
+        positions[v + 2] = (height - 1 - gy - border) * MAP_XY_FACTOR;
+      }
+
+      const ndx = cy * width + cx;
+      computeCellColor(ndx, bt, hm, minH, maxH, baseColor);
+
+      let blendAlphas = null;
+      let blendTileNdx = 0;
+      if (bt && ndx < bt.blendTileNdxes.length) {
+        const blendTileIdx = bt.blendTileNdxes[ndx];
+        if (blendTileIdx > 0 && bt.blendedTiles && blendTileIdx < bt.blendedTiles.length) {
+          const bi = bt.blendedTiles[blendTileIdx];
+          blendAlphas = computeBlendAlphas(bi);
+          blendTileNdx = bi.blendNdx;
+          colorForTileNdx(bi.blendNdx, bt, blendColor);
+        }
+      }
+
+      let extraAlphas = null;
+      let extraTileNdx = 0;
+      if (bt && bt.extraBlendTileNdxes && ndx < bt.extraBlendTileNdxes.length) {
+        const extraIdx = bt.extraBlendTileNdxes[ndx];
+        if (extraIdx > 0 && bt.blendedTiles && extraIdx < bt.blendedTiles.length) {
+          const ebi = bt.blendedTiles[extraIdx];
+          extraAlphas = computeBlendAlphas(ebi);
+          extraTileNdx = ebi.blendNdx;
+          colorForTileNdx(ebi.blendNdx, bt, extraColor);
+        }
+      }
+
+      // Per-corner colors (for fallback vertex-color mode)
+      for (let c = 0; c < 4; c++) {
+        cornerColor.copy(baseColor);
+        if (blendAlphas && blendAlphas[c] > 0) cornerColor.lerp(blendColor, blendAlphas[c] / 255);
+        if (extraAlphas && extraAlphas[c] > 0) cornerColor.lerp(extraColor, extraAlphas[c] / 255);
+        const v = (vi + c) * 3;
+        colors[v]     = cornerColor.r;
+        colors[v + 1] = cornerColor.g;
+        colors[v + 2] = cornerColor.b;
+      }
+
+      // Per-corner UVs + blend alphas (for textured mode)
+      if (terrainAtlas && bt) {
+        const baseTileNdx = bt.tileNdxes[ndx];
+        for (let c = 0; c < 4; c++) {
+          const uv = getQuadrantUV(baseTileNdx, c, terrainAtlas);
+          baseUVs[(vi + c) * 2]     = uv[0];
+          baseUVs[(vi + c) * 2 + 1] = uv[1];
+
+          if (blendAlphas && blendAlphas[c] > 0) {
+            const buv = getQuadrantUV(blendTileNdx, c, terrainAtlas);
+            blendUVs[(vi + c) * 2]     = buv[0];
+            blendUVs[(vi + c) * 2 + 1] = buv[1];
+            blendAlphaArr[vi + c] = blendAlphas[c] / 255;
+          }
+
+          if (extraAlphas && extraAlphas[c] > 0) {
+            const euv = getQuadrantUV(extraTileNdx, c, terrainAtlas);
+            extraUVs[(vi + c) * 2]     = euv[0];
+            extraUVs[(vi + c) * 2 + 1] = euv[1];
+            extraAlphaArr[vi + c] = extraAlphas[c] / 255;
+          }
+        }
+      }
+
+      const ii = cellIdx * 6;
+      indices[ii]     = vi;     indices[ii + 1] = vi + 1; indices[ii + 2] = vi + 2;
+      indices[ii + 3] = vi;     indices[ii + 4] = vi + 2; indices[ii + 5] = vi + 3;
+    }
+  }
+
+  terrainGeo = new THREE.BufferGeometry();
+  terrainGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  terrainGeo.setIndex(new THREE.BufferAttribute(indices, 1));
+
+  if (terrainAtlas) {
+    terrainGeo.setAttribute('baseUV', new THREE.BufferAttribute(baseUVs, 2));
+    terrainGeo.setAttribute('blendUV', new THREE.BufferAttribute(blendUVs, 2));
+    terrainGeo.setAttribute('extraUV', new THREE.BufferAttribute(extraUVs, 2));
+    terrainGeo.setAttribute('blendAlpha', new THREE.BufferAttribute(blendAlphaArr, 1));
+    terrainGeo.setAttribute('extraAlpha', new THREE.BufferAttribute(extraAlphaArr, 1));
+  }
+
+  terrainGeo.computeVertexNormals();
+
+  // Vertex-color material: Lambert (no specular, matching game's terrain)
+  terrainMatColored = new THREE.MeshLambertMaterial({
+    vertexColors: true,
+    flatShading: false,
+    side: THREE.DoubleSide,
+  });
+
+  // Textured material (only when atlas is available)
+  if (terrainAtlas && terrainAtlasTex) {
+    terrainMatTextured = createTexturedMaterial(terrainAtlasTex, mapData.lighting);
+    colorMode = 'texture';
+    document.getElementById('color-mode').value = 'texture';
+  }
+
+  // Playable area dimensions (for water/camera centering)
+  const playW = width - 2 * border;
+  const playH = height - 2 * border;
+
+  // Set up lights BEFORE adding the mesh so shaders compile with shadow support
+  setupSceneLights(mapData.lighting, playW, playH, minH, maxH);
+
+  const activeMat = (colorMode === 'texture' && terrainMatTextured) ? terrainMatTextured : terrainMatColored;
+  terrainMesh = new THREE.Mesh(terrainGeo, activeMat);
+  terrainMesh.receiveShadow = true;
+  terrainMesh.castShadow = false;
+  scene.add(terrainMesh);
+
+  // Water planes from polygon triggers
+  const waterAreas = mapData.polygonTriggers.filter(t => t.isWaterArea);
+  if (waterAreas.length > 0) {
+    buildWater(waterAreas, playW, playH, width, height, border);
+  }
+
+  // Roads
+  if (bigFilePool.size > 0) parseRoadsIniFromPool();
+  const roadSegments = extractRoadSegments(mapData.objects);
+  if (roadSegments.length > 0) {
+    buildRoadTopology(roadSegments);
+    const junctionCount = roadSegments.filter(s => s.type !== ROAD_SEGMENT).length;
+    console.log(`Roads: ${roadSegments.length} total (${roadSegments.length - junctionCount} straight, ${junctionCount} junctions), ${roadTypeMap.size} types from INI`);
+    roadMesh = buildRoadMesh(roadSegments, height, border);
+    if (roadMesh) scene.add(roadMesh);
+  }
+
+  // Build W3D model index and parse object INIs for model loading
+  if (bigFilePool.size > 0) {
+    buildW3DIndex();
+    if (w3dFileIndex.size > 0) parseObjectINIsFromPool();
+  }
+
+  // Objects (positions are in game world coords, need Y-flip)
+  buildObjectMarkers(mapData.objects, width, height, border);
+  scene.add(objectMarkers);
+
+  // Camera positioning — center on the playable area
+  const centerX = (playW * MAP_XY_FACTOR) / 2;
+  const centerZ = (playH * MAP_XY_FACTOR) / 2;
+  const avgH = ((minH + maxH) / 2) * MAP_HEIGHT_SCALE;
+  const mapSize = Math.max(playW, playH) * MAP_XY_FACTOR;
+
+  camState.target.set(centerX, avgH, centerZ);
+  camState.height = Math.min(CAM_MAX_HEIGHT, mapSize * 0.35);
+  camState.yaw = Math.PI * 0.75;
+  camState.pitch = CAM_DEFAULT_PITCH;
+  camState.velocity.set(0, 0, 0);
+
+  return { drawW: width, drawH: height, playW, playH, minH, maxH };
+}
+
+// Compute the base cell color for a given cell index (no blend applied).
+function computeCellColor(ndx, bt, hm, minH, maxH, outColor) {
+  const heightVal = hm.data[ndx];
+  if (colorMode === 'height') {
+    const t = maxH > minH ? (heightVal - minH) / (maxH - minH) : 0.5;
+    if (t < 0.15) outColor.setRGB(0.15, 0.35, 0.15);
+    else if (t < 0.35) outColor.lerpColors(new THREE.Color(0.15, 0.35, 0.15), new THREE.Color(0.5, 0.65, 0.25), (t - 0.15) / 0.2);
+    else if (t < 0.6) outColor.lerpColors(new THREE.Color(0.5, 0.65, 0.25), new THREE.Color(0.65, 0.55, 0.35), (t - 0.35) / 0.25);
+    else if (t < 0.8) outColor.lerpColors(new THREE.Color(0.65, 0.55, 0.35), new THREE.Color(0.55, 0.5, 0.45), (t - 0.6) / 0.2);
+    else outColor.lerpColors(new THREE.Color(0.55, 0.5, 0.45), new THREE.Color(0.9, 0.9, 0.92), (t - 0.8) / 0.2);
+  } else if (colorMode === 'normal') {
+    outColor.setRGB(0.6, 0.55, 0.45);
+  } else if (bt && ndx < bt.tileNdxes.length) {
+    colorForTileNdx(bt.tileNdxes[ndx], bt, outColor);
+  } else {
+    outColor.setHex(0x808060);
+  }
+}
+
+function buildWater(waterAreas, playW, playH, fullW, fullH, border) {
+  let waterHeight = 0;
+  for (const area of waterAreas) {
+    for (const p of area.points) {
+      waterHeight = Math.max(waterHeight, p.z * MAP_HEIGHT_SCALE);
+    }
+  }
+  if (waterHeight === 0) waterHeight = 20;
+
+  const size = Math.max(fullW, fullH) * MAP_XY_FACTOR * 1.5;
+  const centerX = (playW * MAP_XY_FACTOR) / 2;
+  const centerZ = (playH * MAP_XY_FACTOR) / 2;
+
+  const waterGeo = new THREE.PlaneGeometry(size, size);
+  const waterMat = new THREE.MeshPhongMaterial({
+    color: 0x1a5276,
+    transparent: true,
+    opacity: 0.55,
+    shininess: 60,
+    specular: 0x224466,
+    side: THREE.DoubleSide,
+  });
+  waterPlane = new THREE.Mesh(waterGeo, waterMat);
+  waterPlane.rotation.x = -Math.PI / 2;
+  waterPlane.position.set(centerX, waterHeight, centerZ);
+  scene.add(waterPlane);
+}
+
+// ─── Terrain Height Utility ──────────────────────────────────────────────
+
+function getTerrainHeightAt(worldX, worldY) {
+  const hm = currentMapData.heightMap;
+  const w = hm.width, h = hm.height, b = hm.borderSize;
+  const gx = worldX / MAP_XY_FACTOR + b;
+  const gy = (h - 1 - b) - worldY / MAP_XY_FACTOR;
+  const ix = Math.max(0, Math.min(w - 1, Math.floor(gx)));
+  const iy = Math.max(0, Math.min(h - 1, Math.floor(gy)));
+  const fx = gx - ix;
+  const fy = gy - iy;
+  const ix1 = Math.min(ix + 1, w - 1);
+  const iy1 = Math.min(iy + 1, h - 1);
+  const h00 = hm.data[iy * w + ix];
+  const h10 = hm.data[iy * w + ix1];
+  const h01 = hm.data[iy1 * w + ix];
+  const h11 = hm.data[iy1 * w + ix1];
+  return (h00 * (1 - fx) * (1 - fy) + h10 * fx * (1 - fy) + h01 * (1 - fx) * fy + h11 * fx * fy) * MAP_HEIGHT_SCALE;
+}
+
+// ─── Road Extraction & Geometry ─────────────────────────────────────────
+
+const roadTypeMap = new Map();
+
+function parseRoadsIniFromPool() {
+  roadTypeMap.clear();
+  const candidates = ['data/ini/roads.ini', 'data/ini/default/roads.ini'];
+  for (const path of candidates) {
+    const entry = bigFilePool.get(path);
+    if (!entry) continue;
+    const bytes = new Uint8Array(entry.buffer, entry.offset, entry.size);
+    const text = new TextDecoder('ascii').decode(bytes);
+    parseRoadsIni(text);
+  }
+}
+
+function parseRoadsIni(text) {
+  const lines = text.split(/\r?\n/);
+  let currentName = null;
+  let isRoad = false;
+  let roadWidth = DEFAULT_ROAD_SCALE;
+  let roadWidthInTexture = 1.0;
+  let texture = '';
+  for (const raw of lines) {
+    const line = raw.replace(/;.*$/, '').trim();
+    if (!line) continue;
+    if (/^Road\s+/i.test(line)) {
+      currentName = line.replace(/^Road\s+/i, '').trim();
+      isRoad = true;
+      roadWidth = DEFAULT_ROAD_SCALE;
+      roadWidthInTexture = 1.0;
+      texture = '';
+    } else if (/^Bridge\s+/i.test(line)) {
+      isRoad = false;
+    } else if (/^End$/i.test(line) && isRoad && currentName) {
+      roadTypeMap.set(currentName.toLowerCase(), { roadWidth, roadWidthInTexture, texture });
+      currentName = null;
+    } else if (isRoad && currentName) {
+      const m = line.match(/^Texture\s*=\s*(.+)/i);
+      if (m) texture = m[1].trim();
+      const mw = line.match(/^RoadWidth\s*=\s*([\d.]+)/i);
+      if (mw) roadWidth = parseFloat(mw[1]);
+      const mwt = line.match(/^RoadWidthInTexture\s*=\s*([\d.]+)/i);
+      if (mwt) roadWidthInTexture = parseFloat(mwt[1]);
+    }
+  }
+}
+
+// Segment types mirroring W3DRoadBuffer TCorner enum
+const ROAD_SEGMENT  = 0;
+const ROAD_CURVE    = 1;
+const ROAD_TEE      = 2;
+const ROAD_FOUR_WAY = 3;
+const ROAD_Y        = 4;
+const ROAD_H        = 5;
+const ROAD_H_FLIP   = 6;
+
+const CORNER_RADIUS = 1.5;
+const TIGHT_CORNER_RADIUS = 0.5;
+const TEE_WIDTH_ADJUSTMENT = 1.03;
+const POSITION_TOLERANCE = 0.5;
+
+function vec2Len(x, y) { return Math.sqrt(x*x + y*y); }
+function vec2Dot(ax, ay, bx, by) { return ax*bx + ay*by; }
+function vec2Cross(ax, ay, bx, by) { return ax*by - ay*bx; }
+function vec2Norm(x, y) { const l = vec2Len(x, y); return l < 1e-9 ? {x:0,y:0} : {x:x/l,y:y/l}; }
+function vec2Rot(x, y, angle) {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return { x: x*c - y*s, y: x*s + y*c };
+}
+function ptEq(a, b) {
+  return Math.abs(a.x - b.x) < POSITION_TOLERANCE && Math.abs(a.y - b.y) < POSITION_TOLERANCE;
+}
+
+function extractRoadSegments(objects) {
+  const segments = [];
+  for (let i = 0; i < objects.length - 1; i++) {
+    const o1 = objects[i];
+    if (!(o1.flags & FLAG_ROAD_POINT1)) continue;
+    const o2 = objects[i + 1];
+    if (!(o2.flags & FLAG_ROAD_POINT2)) continue;
+    const typeName = o1.name.toLowerCase();
+    const typeInfo = roadTypeMap.get(typeName);
+    const scale = typeInfo ? typeInfo.roadWidth : DEFAULT_ROAD_SCALE;
+    const widthInTex = typeInfo ? typeInfo.roadWidthInTexture : 1.0;
+    const isAngled = !!(o1.flags & FLAG_ROAD_CORNER_ANGLED);
+    const isTight  = !!(o1.flags & FLAG_ROAD_CORNER_TIGHT);
+    const curveRadius = isTight ? TIGHT_CORNER_RADIUS : CORNER_RADIUS;
+
+    segments.push({
+      pt1: { x: o1.x, y: o1.y, count: 0, last: true },
+      pt2: { x: o2.x, y: o2.y, count: 0, last: true },
+      name: o1.name,
+      typeName,
+      halfWidth: scale * widthInTex / 2.0,
+      widthInTexture: widthInTex,
+      scale,
+      type: ROAD_SEGMENT,
+      isAngled,
+      curveRadius,
+    });
+    i++;
+  }
+  return segments;
+}
+
+function buildRoadTopology(segments) {
+  // Phase 1: count connections at shared endpoints (same type only)
+  for (let j = segments.length - 1; j > 0; j--) {
+    const s2 = segments[j];
+    if (s2.type !== ROAD_SEGMENT) continue;
+    for (let i = 0; i < j; i++) {
+      const s1 = segments[i];
+      if (s1.type !== ROAD_SEGMENT) continue;
+      if (s1.typeName !== s2.typeName) continue;
+      if (ptEq(s1.pt1, s2.pt1)) { s1.pt1.count++; s2.pt1.count++; s1.pt1.last = false; }
+      if (ptEq(s1.pt1, s2.pt2)) { s1.pt1.count++; s2.pt2.count++; s1.pt1.last = false; }
+      if (ptEq(s1.pt2, s2.pt1)) { s1.pt2.count++; s2.pt1.count++; s1.pt2.last = false; }
+      if (ptEq(s1.pt2, s2.pt2)) { s1.pt2.count++; s2.pt2.count++; s1.pt2.last = false; }
+    }
+  }
+
+  // Phase 2: insert T/4-way junctions, collecting junction locations
+  const junctionLocs = [];
+  const numOrig = segments.length;
+  for (let i = 0; i < numOrig; i++) {
+    const s = segments[i];
+    if (s.type !== ROAD_SEGMENT) continue;
+    if (s.pt1.count === 2) {
+      junctionLocs.push({ x: s.pt1.x, y: s.pt1.y });
+      insertTee(segments, s.pt1, i);
+    }
+    if (s.pt2.count === 2) {
+      junctionLocs.push({ x: s.pt2.x, y: s.pt2.y });
+      insertTee(segments, s.pt2, i);
+    }
+    if (s.pt1.count === 3) {
+      junctionLocs.push({ x: s.pt1.x, y: s.pt1.y });
+      insert4Way(segments, s.pt1, i);
+    }
+    if (s.pt2.count === 3) {
+      junctionLocs.push({ x: s.pt2.x, y: s.pt2.y });
+      insert4Way(segments, s.pt2, i);
+    }
+  }
+
+  // Phase 3: insert curves at 2-segment corners (only where count == 1
+  // and NOT near any junction location)
+  function isNearJunction(pt) {
+    for (const jl of junctionLocs) {
+      if (Math.abs(pt.x - jl.x) < POSITION_TOLERANCE && Math.abs(pt.y - jl.y) < POSITION_TOLERANCE) return true;
+    }
+    return false;
+  }
+
+  const numBeforeCurves = segments.length;
+  let segmentStartIndex = -1;
+  for (let i = 0; i < numBeforeCurves; i++) {
+    if (segments[i].type !== ROAD_SEGMENT) continue;
+    if (i < numBeforeCurves - 1
+        && segments[i+1].type === ROAD_SEGMENT
+        && segments[i].typeName === segments[i+1].typeName
+        && ptEq(segments[i].pt1, segments[i+1].pt2)
+        && segments[i].pt1.count === 1
+        && segments[i+1].pt2.count === 1
+        && !isNearJunction(segments[i].pt1)) {
+      insertCurveAt(segments, i, i + 1);
+      if (segmentStartIndex < 0) segmentStartIndex = i;
+    } else if (segmentStartIndex >= 0) {
+      if (segments[i].type === ROAD_SEGMENT
+          && segments[i].typeName === segments[segmentStartIndex].typeName
+          && ptEq(segments[i].pt1, segments[segmentStartIndex].pt2)
+          && segments[segmentStartIndex].pt2.count === 1
+          && segments[i].pt1.count === 1
+          && !isNearJunction(segments[i].pt1)) {
+        insertCurveAt(segments, i, segmentStartIndex);
+      }
+      segmentStartIndex = -1;
+    }
+  }
+
+  return segments;
+}
+
+function findSegmentsAt(segments, loc, excludeIdx, typeName) {
+  const result = [];
+  for (let i = 0; i < segments.length; i++) {
+    if (i === excludeIdx) continue;
+    const s = segments[i];
+    if (s.typeName !== typeName) continue;
+    if (ptEq(s.pt1, loc)) result.push({ seg: s, centerPt: s.pt1, remotePt: s.pt2, idx: i });
+    else if (ptEq(s.pt2, loc)) result.push({ seg: s, centerPt: s.pt2, remotePt: s.pt1, idx: i });
+  }
+  return result;
+}
+
+function markAllEndpointsAt(segments, loc, typeName, newCount) {
+  for (const s of segments) {
+    if (s.typeName !== typeName) continue;
+    if (ptEq(s.pt1, loc)) s.pt1.count = newCount;
+    if (ptEq(s.pt2, loc)) s.pt2.count = newCount;
+  }
+}
+
+function insertTee(segments, locPt, index1) {
+  const loc = { x: locPt.x, y: locPt.y };
+  const s1 = segments[index1];
+  const others = findSegmentsAt(segments, loc, index1, s1.typeName);
+  if (others.length < 2) return;
+
+  const pr1 = ptEq(s1.pt1, loc) ? s1.pt2 : s1.pt1;
+  const pr2 = others[0].remotePt;
+  const pr3 = others[1].remotePt;
+
+  const v1 = vec2Norm(pr1.x - loc.x, pr1.y - loc.y);
+  const v2 = vec2Norm(pr2.x - loc.x, pr2.y - loc.y);
+  const v3 = vec2Norm(pr3.x - loc.x, pr3.y - loc.y);
+
+  const dot12 = vec2Dot(v1.x, v1.y, v2.x, v2.y);
+  const dot13 = vec2Dot(v1.x, v1.y, v3.x, v3.y);
+  const dot32 = vec2Dot(v3.x, v3.y, v2.x, v2.y);
+
+  let upVector, decider;
+  if (dot12 <= dot13 && dot12 <= dot32) {
+    upVector = { x: v2.x - v1.x, y: v2.y - v1.y };
+    decider = v3;
+  } else if (dot13 <= dot32) {
+    upVector = { x: v3.x - v1.x, y: v3.y - v1.y };
+    decider = v2;
+  } else {
+    upVector = { x: v2.x - v3.x, y: v2.y - v3.y };
+    decider = v1;
+  }
+  const upN = vec2Norm(upVector.x, upVector.y);
+
+  const angle = (vec2Cross(upN.x, upN.y, decider.x, decider.y) < 0) ? -Math.PI/2 : Math.PI/2;
+  const upScaled = { x: upN.x * 0.5 * s1.scale, y: upN.y * 0.5 * s1.scale };
+  const teeVec = vec2Rot(upScaled.x, upScaled.y, angle);
+
+  const dot = Math.abs(vec2Dot(upN.x, upN.y, decider.x, decider.y));
+  const isSlanted = dot > 0.5;
+
+  let segType;
+  if (isSlanted) {
+    const flip = vec2Cross(teeVec.x, teeVec.y, decider.x, decider.y) > 0;
+    segType = flip ? ROAD_H_FLIP : ROAD_H;
+  } else {
+    segType = ROAD_TEE;
+  }
+
+  // Mark ALL endpoints at this junction across all segments
+  markAllEndpointsAt(segments, loc, s1.typeName, -3);
+
+  segments.push({
+    pt1: { x: loc.x, y: loc.y, count: -3, last: true },
+    pt2: { x: loc.x + teeVec.x, y: loc.y + teeVec.y, count: 0, last: true },
+    name: s1.name,
+    typeName: s1.typeName,
+    halfWidth: s1.halfWidth,
+    widthInTexture: s1.widthInTexture,
+    scale: s1.scale,
+    type: segType,
+    isAngled: false,
+    curveRadius: s1.curveRadius,
+  });
+}
+
+function insert4Way(segments, locPt, index1) {
+  const loc = { x: locPt.x, y: locPt.y };
+  const s1 = segments[index1];
+  const others = findSegmentsAt(segments, loc, index1, s1.typeName);
+  if (others.length < 3) return;
+
+  const pr1 = ptEq(s1.pt1, loc) ? s1.pt2 : s1.pt1;
+  const arms = [pr1, others[0].remotePt, others[1].remotePt, others[2].remotePt];
+  const dirs = arms.map(p => vec2Norm(p.x - loc.x, p.y - loc.y));
+
+  let bestDot = 2, bestI = 0, bestJ = 1;
+  for (let i = 0; i < 4; i++) {
+    for (let j = i+1; j < 4; j++) {
+      const d = vec2Dot(dirs[i].x, dirs[i].y, dirs[j].x, dirs[j].y);
+      if (d < bestDot) { bestDot = d; bestI = i; bestJ = j; }
+    }
+  }
+  const alignDir = vec2Norm(dirs[bestI].x - dirs[bestJ].x, dirs[bestI].y - dirs[bestJ].y);
+  const alignVec = { x: alignDir.x * 0.5 * s1.scale, y: alignDir.y * 0.5 * s1.scale };
+
+  // Mark ALL endpoints at this junction across all segments
+  markAllEndpointsAt(segments, loc, s1.typeName, -3);
+
+  segments.push({
+    pt1: { x: loc.x, y: loc.y, count: -3, last: true },
+    pt2: { x: loc.x + alignVec.x, y: loc.y + alignVec.y, count: 0, last: true },
+    name: s1.name,
+    typeName: s1.typeName,
+    halfWidth: s1.halfWidth,
+    widthInTexture: s1.widthInTexture,
+    scale: s1.scale,
+    type: ROAD_FOUR_WAY,
+    isAngled: false,
+    curveRadius: s1.curveRadius,
+  });
+}
+
+function insertCurveAt(segments, ndx1, ndx2) {
+  // Mirrors W3DRoadBuffer::insertCurveSegmentAt
+  // Shared point: segments[ndx1].pt1 == segments[ndx2].pt2
+  const s1 = segments[ndx1], s2 = segments[ndx2];
+  if (s1.isAngled) return;
+
+  // line1 direction: ndx1.pt1 -> ndx1.pt2 (same as game)
+  // line2 direction: ndx2.pt1 -> ndx2.pt2 (same as game)
+  const d1 = vec2Norm(s1.pt2.x - s1.pt1.x, s1.pt2.y - s1.pt1.y);
+  const d2 = vec2Norm(s2.pt2.x - s2.pt1.x, s2.pt2.y - s2.pt1.y);
+  const curSin = vec2Dot(d1.x, d1.y, d2.x, d2.y);
+  const xpdct = vec2Cross(d1.x, d1.y, d2.x, d2.y);
+
+  const angle = Math.acos(Math.max(-1, Math.min(1, curSin)));
+  const count = angle / (Math.PI / 6);
+  if (count < 0.9) return;
+
+  const radius = s1.curveRadius * s1.scale;
+
+  // Determine turn direction and assign pr1-pr4 like the game
+  let pr1, pr2, pr3, pr4;
+  let ld1 = d1, ld2 = d2;
+  if (xpdct > 0) {
+    pr1 = s1.pt1;  // shared
+    pr2 = s1.pt2;  // remote end of ndx1
+    pr3 = s2.pt1;  // remote end of ndx2
+    pr4 = s2.pt2;  // shared
+  } else {
+    pr4 = s1.pt1;  // shared
+    pr3 = s1.pt2;  // remote end of ndx1
+    pr2 = s2.pt1;  // remote end of ndx2
+    pr1 = s2.pt2;  // shared
+    // Recompute line directions with swapped segments
+    ld1 = vec2Norm(pr2.x - pr1.x, pr2.y - pr1.y);
+    ld2 = vec2Norm(pr4.x - pr3.x, pr4.y - pr3.y);
+  }
+
+  // Compute offset lines perpendicular to each segment
+  // offset = radius * direction rotated -90°
+  const off1x = ld1.y * radius, off1y = -ld1.x * radius;
+  const off2x = ld2.y * radius, off2y = -ld2.x * radius;
+
+  // Offset line 1: (pr1 + off1) to (pr2 + off1)
+  // Offset line 2: (pr3 + off2) to (pr4 + off2)
+  // Find intersection of these two offset lines
+  const o1ax = pr1.x + off1x, o1ay = pr1.y + off1y;
+  const o1bx = pr2.x + off1x, o1by = pr2.y + off1y;
+  const o2ax = pr3.x + off2x, o2ay = pr3.y + off2y;
+  const o2bx = pr4.x + off2x, o2by = pr4.y + off2y;
+
+  const d1x = o1bx - o1ax, d1y = o1by - o1ay;
+  const d2x = o2bx - o2ax, d2y = o2by - o2ay;
+  const denom = d1x * d2y - d1y * d2x;
+  if (Math.abs(denom) < 1e-6) return; // parallel lines, can't curve
+
+  const t = ((o2ax - o1ax) * d2y - (o2ay - o1ay) * d2x) / denom;
+  const intX = o1ax + d1x * t, intY = o1ay + d1y * t;
+
+  // Project intersection back onto original lines to find new endpoints
+  // cross1: from intersection toward line2 (perpendicular to off2)
+  // cross2: from intersection toward line1 (perpendicular to off1)
+  const newPr4x = intX - off2x, newPr4y = intY - off2y;
+  const newPr1x = intX - off1x, newPr1y = intY - off1y;
+
+  // Validate: make sure the new endpoints don't clip the segments too much
+  const dotCheck1 = vec2Dot(ld2.x, ld2.y, newPr4x - pr3.x, newPr4y - pr3.y);
+  if (dotCheck1 < 0.5) return;
+  const dotCheck2 = vec2Dot(ld1.x, ld1.y, pr2.x - newPr1x, pr2.y - newPr1y);
+  if (dotCheck2 < 0.5) return;
+
+  // Build curve segments as 30° arcs from newPr4 around the curve center
+  const stepAngle = -Math.PI / 6;
+  let ptX = newPr4x, ptY = newPr4y;
+  const dirFromPt = vec2Norm(pr3.x - newPr4x, pr3.y - newPr4y);
+
+  // Center of curve: offset perpendicular to direction at pt
+  const cOffX = -dirFromPt.y * radius, cOffY = dirFromPt.x * radius;
+  const centerX = ptX + cOffX, centerY = ptY + cOffY;
+
+  const numSteps = Math.max(1, Math.floor(count));
+  for (let step = 0; step < numSteps; step++) {
+    const relX = ptX - centerX, relY = ptY - centerY;
+    const rot = vec2Rot(relX, relY, stepAngle);
+    const newPtX = centerX + rot.x, newPtY = centerY + rot.y;
+
+    // Direction at new point (rotated from current direction)
+    const curDir = vec2Norm(ptX - centerX, ptY - centerY);
+    const rotDir = vec2Rot(curDir.x, curDir.y, stepAngle);
+    // pt2 = newPt + direction * scale (tangent direction at new point)
+    const tangentX = -rotDir.y, tangentY = rotDir.x;
+    const endX = newPtX + tangentX * s1.scale;
+    const endY = newPtY + tangentY * s1.scale;
+
+    segments.push({
+      pt1: { x: newPtX, y: newPtY, count: 0, last: true },
+      pt2: { x: endX, y: endY, count: 0, last: true },
+      name: s1.name,
+      typeName: s1.typeName,
+      halfWidth: s1.halfWidth,
+      widthInTexture: s1.widthInTexture,
+      scale: s1.scale,
+      type: ROAD_CURVE,
+      isAngled: false,
+      curveRadius: s1.curveRadius,
+    });
+
+    ptX = newPtX; ptY = newPtY;
+  }
+}
+
+function loadTextureFromPool(texturePath) {
+  if (!texturePath) return null;
+  const baseName = texturePath.replace(/\.[^.]+$/, '').toLowerCase();
+  const justFilename = baseName.includes('/') ? baseName.split('/').pop() : baseName;
+  const candidates = [
+    texturePath,
+    baseName + '.dds',
+    baseName + '.tga',
+    'art/textures/' + texturePath,
+    'art/textures/' + baseName + '.dds',
+    'art/textures/' + baseName + '.tga',
+    'art/textures/' + justFilename + '.dds',
+    'art/textures/' + justFilename + '.tga',
+  ];
+  for (const c of candidates) {
+    const entry = getFileFromPool(c);
+    if (!entry) continue;
+    try {
+      const raw = new Uint8Array(entry.buffer, entry.offset, entry.size);
+      const isDDS = entry.size > 4 && raw[0] === 0x44 && raw[1] === 0x44 && raw[2] === 0x53 && raw[3] === 0x20;
+      const img = isDDS ? parseDDS(raw) : parseTGA(raw);
+      const tex = new THREE.DataTexture(img.pixels, img.width, img.height, THREE.RGBAFormat);
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.magFilter = THREE.LinearFilter;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.generateMipmaps = true;
+      tex.needsUpdate = true;
+      return tex;
+    } catch (e) {
+      console.warn('Failed to load texture:', c, e);
+    }
+  }
+  // Last resort: search pool by just the filename
+  if (justFilename) {
+    for (const [path] of bigFilePool) {
+      const pBase = path.replace(/\.[^.]+$/, '');
+      const pFilename = pBase.includes('/') ? pBase.split('/').pop() : pBase;
+      if (pFilename === justFilename) {
+        const entry = bigFilePool.get(path);
+        try {
+          const raw = new Uint8Array(entry.buffer, entry.offset, entry.size);
+          const isDDS = entry.size > 4 && raw[0] === 0x44 && raw[1] === 0x44 && raw[2] === 0x53 && raw[3] === 0x20;
+          const img = isDDS ? parseDDS(raw) : parseTGA(raw);
+          const tex = new THREE.DataTexture(img.pixels, img.width, img.height, THREE.RGBAFormat);
+          tex.wrapS = THREE.RepeatWrapping;
+          tex.wrapT = THREE.RepeatWrapping;
+          tex.magFilter = THREE.LinearFilter;
+          tex.minFilter = THREE.LinearMipmapLinearFilter;
+          tex.generateMipmaps = true;
+          tex.needsUpdate = true;
+          return tex;
+        } catch (e) { /* skip */ }
+      }
+    }
+  }
+  return null;
+}
+
+function loadTextureFromPoolWithLuminanceAlpha(texturePath) {
+  if (!texturePath) return null;
+  const baseName = texturePath.replace(/\.[^.]+$/, '').toLowerCase();
+  const justFilename = baseName.includes('/') ? baseName.split('/').pop() : baseName;
+  const candidates = [
+    texturePath, baseName + '.dds', baseName + '.tga',
+    'art/textures/' + texturePath, 'art/textures/' + baseName + '.dds',
+    'art/textures/' + baseName + '.tga', 'art/textures/' + justFilename + '.dds',
+    'art/textures/' + justFilename + '.tga',
+  ];
+  function makeTexFromImg(img) {
+    const px = img.pixels;
+    for (let i = 0; i < px.length; i += 4) {
+      const lum = px[i] * 0.299 + px[i+1] * 0.587 + px[i+2] * 0.114;
+      px[i+3] = Math.min(255, (lum * 2) | 0);
+    }
+    const tex = new THREE.DataTexture(px, img.width, img.height, THREE.RGBAFormat);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
+    tex.needsUpdate = true;
+    return tex;
+  }
+  for (const c of candidates) {
+    const entry = getFileFromPool(c);
+    if (!entry) continue;
+    try {
+      const raw = new Uint8Array(entry.buffer, entry.offset, entry.size);
+      const isDDS = entry.size > 4 && raw[0] === 0x44 && raw[1] === 0x44 && raw[2] === 0x53 && raw[3] === 0x20;
+      return makeTexFromImg(isDDS ? parseDDS(raw) : parseTGA(raw));
+    } catch (e) { console.warn('Failed to load luminance-alpha texture:', c, e); }
+  }
+  if (justFilename) {
+    for (const [path] of bigFilePool) {
+      const pBase = path.replace(/\.[^.]+$/, '');
+      const pFilename = pBase.includes('/') ? pBase.split('/').pop() : pBase;
+      if (pFilename === justFilename) {
+        const entry = bigFilePool.get(path);
+        try {
+          const raw = new Uint8Array(entry.buffer, entry.offset, entry.size);
+          const isDDS = entry.size > 4 && raw[0] === 0x44 && raw[1] === 0x44 && raw[2] === 0x53 && raw[3] === 0x20;
+          return makeTexFromImg(isDDS ? parseDDS(raw) : parseTGA(raw));
+        } catch (e) { /* skip */ }
+      }
+    }
+  }
+  return null;
+}
+
+function computeSegmentCorners(seg) {
+  const loc = seg.pt1;
+  const dx = seg.pt2.x - seg.pt1.x;
+  const dy = seg.pt2.y - seg.pt1.y;
+  const len = vec2Len(dx, dy);
+
+  let rvx, rvy, rnx, rny;
+  if (len < 0.01) { rvx = 1; rvy = 0; rnx = 0; rny = 1; }
+  else { rvx = dx/len; rvy = dy/len; rnx = -rvy; rny = rvx; }
+
+  const scale = seg.scale;
+  const wit = seg.widthInTexture;
+  let uOff, vOff, uScale, vScale;
+  let corners;
+
+  switch (seg.type) {
+    case ROAD_SEGMENT: {
+      uOff = 0; vOff = 85/512;
+      uScale = scale; vScale = scale;
+      const hw = seg.halfWidth;
+      corners = {
+        bl: { x: seg.pt1.x - rnx*hw, y: seg.pt1.y - rny*hw },
+        tl: { x: seg.pt1.x + rnx*hw, y: seg.pt1.y + rny*hw },
+        br: { x: seg.pt2.x - rnx*hw, y: seg.pt2.y - rny*hw },
+        tr: { x: seg.pt2.x + rnx*hw, y: seg.pt2.y + rny*hw },
+      };
+      break;
+    }
+    case ROAD_TEE:
+    case ROAD_FOUR_WAY: {
+      uOff = 425/512;
+      vOff = seg.type === ROAD_FOUR_WAY ? 425/512 : 255/512;
+      uScale = scale; vScale = scale;
+      const teeFactor = scale * TEE_WIDTH_ADJUSTMENT / 2;
+      const left = wit * scale / 2;
+      // loadFloatSection: builds quad centered on loc along roadVector
+      const rvLen = left + teeFactor;
+      const lx = loc.x - rvx * left;
+      const ly = loc.y - rvy * left;
+      corners = {
+        bl: { x: lx - rnx*teeFactor, y: ly - rny*teeFactor },
+        br: { x: lx + rvx*rvLen - rnx*teeFactor, y: ly + rvy*rvLen - rny*teeFactor },
+        tr: { x: lx + rvx*rvLen + rnx*teeFactor, y: ly + rvy*rvLen + rny*teeFactor },
+        tl: { x: lx + rnx*teeFactor, y: ly + rny*teeFactor },
+      };
+      break;
+    }
+    case ROAD_CURVE: {
+      uOff = 4/512;
+      vOff = seg.curveRadius === TIGHT_CORNER_RADIUS ? 425/512 : 255/512;
+      uScale = scale; vScale = scale;
+      const curveH = wit * scale / 2;
+      const rVx = rvx * scale, rVy = rvy * scale;
+      const rNx = rnx * curveH, rNy = rny * curveH;
+      if (seg.curveRadius === TIGHT_CORNER_RADIUS) {
+        // Tight curve: roadVector*0.5 quad with nudges per W3DRoadBuffer.cpp
+        let blx = loc.x - rNx, bly = loc.y - rNy;
+        let brx = blx + rVx*0.5, bry = bly + rVy*0.5;
+        let trx = brx + 2*rNx, try_ = bry + 2*rNy;
+        let tlx = blx + 2*rNx, tly = bly + 2*rNy;
+        brx += rVx*0.1 + rNx*0.2; bry += rVy*0.1 + rNy*0.2;
+        blx -= rNx*0.1 + rVx*0.02; bly -= rNy*0.1 + rVy*0.02;
+        tlx -= rVx*0.02; tly -= rVy*0.02;
+        trx -= rVx*0.4; try_ -= rVy*0.4;
+        trx += rNx*0.2; try_ += rNy*0.2;
+        corners = {
+          bl: {x:blx,y:bly}, br: {x:brx,y:bry}, tr: {x:trx,y:try_}, tl: {x:tlx,y:tly},
+        };
+      } else {
+        // Normal curve with nudges per W3DRoadBuffer.cpp
+        let blx = loc.x - rNx, bly = loc.y - rNy;
+        let brx = blx + rVx, bry = bly + rVy;
+        let trx = brx + 2*rNx, try_ = bry + 2*rNy;
+        let tlx = blx + 2*rNx, tly = bly + 2*rNy;
+        brx += rVx*0.1 + rNx*0.4; bry += rVy*0.1 + rNy*0.4;
+        blx -= rNx*0.2 + rVx*0.02; bly -= rNy*0.2 + rVy*0.02;
+        tlx -= rVx*0.02; tly -= rVy*0.02;
+        trx -= rVx*0.4; try_ -= rVy*0.4;
+        trx += rNx*0.4; try_ += rNy*0.4;
+        corners = {
+          bl: {x:blx,y:bly}, br: {x:brx,y:bry}, tr: {x:trx,y:try_}, tl: {x:tlx,y:tly},
+        };
+      }
+      break;
+    }
+    case ROAD_Y: {
+      uOff = 255/512; vOff = 226/512;
+      uScale = scale; vScale = scale;
+      const rw = scale;
+      const rvSx = rvx * rw * 1.59, rvSy = rvy * rw * 1.59;
+      const rnSx = rnx * rw, rnSy = rny * rw;
+      const tlx = loc.x + rnSx*0.29 - rvSx*0.5;
+      const tly = loc.y + rnSy*0.29 - rvSy*0.5;
+      corners = {
+        tl: { x: tlx, y: tly },
+        bl: { x: tlx - rnSx*1.08, y: tly - rnSy*1.08 },
+        br: { x: tlx - rnSx*1.08 + rvSx, y: tly - rnSy*1.08 + rvSy },
+        tr: { x: tlx + rvSx, y: tly + rvSy },
+      };
+      break;
+    }
+    case ROAD_H:
+    case ROAD_H_FLIP: {
+      uOff = 202/512; vOff = 364/512;
+      uScale = scale; vScale = scale;
+      const rw = scale;
+      const rvHx = rvx * rw, rvHy = rvy * rw;
+      let rnHx = rnx * rw * 1.35, rnHy = rny * rw * 1.35;
+      const flip = seg.type === ROAD_H_FLIP;
+      const factor = flip ? 0.20 : 0.80;
+      const blx = loc.x - rnHx*factor - rvHx*wit/2;
+      const bly = loc.y - rnHy*factor - rvHy*wit/2;
+      const wdx = rvHx*wit/2 + rvHx*1.2;
+      const wdy = rvHy*wit/2 + rvHy*1.2;
+      corners = {
+        bl: { x: blx, y: bly },
+        br: { x: blx + wdx, y: bly + wdy },
+        tr: { x: blx + wdx + rnHx, y: bly + wdy + rnHy },
+        tl: { x: blx + rnHx, y: bly + rnHy },
+      };
+      if (flip) { rnHx = -rnHx; rnHy = -rnHy; }
+      break;
+    }
+    default:
+      return null;
+  }
+
+  return { corners, uOff, vOff, uScale, vScale, loc, rvx, rvy, rnx, rny };
+}
+
+// Draw order matching W3DRoadBuffer: SEGMENT=0, CURVE=1, TEE=2, FOUR_WAY=3,
+// Y=4, H=5, H_FLIP=6. Junctions drawn last so they paint over straights.
+const ROAD_DRAW_ORDER = [
+  ROAD_SEGMENT, ROAD_CURVE, ROAD_TEE, ROAD_FOUR_WAY,
+  ROAD_Y, ROAD_H, ROAD_H_FLIP,
+];
+
+function buildRoadQuadGeo(seg, playH) {
+  const info = computeSegmentCorners(seg);
+  if (!info) return null;
+  const { corners, uOff, vOff, uScale, vScale, loc, rvx, rvy, rnx, rny } = info;
+
+  const uLen = vec2Len(
+    (corners.br.x - corners.bl.x + corners.tr.x - corners.tl.x) / 2,
+    (corners.br.y - corners.bl.y + corners.tr.y - corners.tl.y) / 2
+  );
+  const vLen = vec2Len(
+    (corners.tl.x - corners.bl.x + corners.tr.x - corners.br.x) / 2,
+    (corners.tl.y - corners.bl.y + corners.tr.y - corners.br.y) / 2
+  );
+
+  const uSteps = Math.max(2, Math.ceil(uLen / MAP_XY_FACTOR) + 1);
+  const vSteps = Math.max(2, Math.ceil(vLen / MAP_XY_FACTOR) + 1);
+  const positions = [], uvs = [], indices = [];
+
+  for (let ui = 0; ui < uSteps; ui++) {
+    const uf = ui / (uSteps - 1);
+    for (let vi = 0; vi < vSteps; vi++) {
+      const vf = vi / (vSteps - 1);
+      const wx = corners.bl.x*(1-uf)*(1-vf) + corners.br.x*uf*(1-vf) +
+                 corners.tl.x*(1-uf)*vf     + corners.tr.x*uf*vf;
+      const wy = corners.bl.y*(1-uf)*(1-vf) + corners.br.y*uf*(1-vf) +
+                 corners.tl.y*(1-uf)*vf     + corners.tr.y*uf*vf;
+      const wz = getTerrainHeightAt(wx, wy) + ROAD_FLOAT_AMOUNT;
+
+      positions.push(wx, wz, (playH - 1) * MAP_XY_FACTOR - wy);
+
+      const cvx = wx - loc.x, cvy = wy - loc.y;
+      uvs.push(
+        uOff + vec2Dot(rvx, rvy, cvx, cvy) / (uScale * 4),
+        vOff - vec2Dot(rnx, rny, cvx, cvy) / (vScale * 4)
+      );
+    }
+  }
+
+  for (let ui = 0; ui < uSteps - 1; ui++) {
+    for (let vi = 0; vi < vSteps - 1; vi++) {
+      const base = ui * vSteps + vi;
+      indices.push(base, base+1, base+vSteps, base+1, base+vSteps+1, base+vSteps);
+    }
+  }
+
+  return { positions, uvs, indices };
+}
+
+function buildRoadMesh(segments, fullH, border) {
+  if (!segments || segments.length === 0) return null;
+
+  const playH = fullH - 2 * border;
+
+  // Group by (roadTypeName, segmentType) for correct draw ordering
+  const buckets = new Map();
+  for (const seg of segments) {
+    const key = seg.typeName + '|' + seg.type;
+    if (!buckets.has(key)) buckets.set(key, { typeName: seg.typeName, segType: seg.type, segs: [] });
+    buckets.get(key).segs.push(seg);
+  }
+
+  // Cache textures per road type so we load each only once
+  const texCache = new Map();
+  function getTexForType(typeName) {
+    if (texCache.has(typeName)) return texCache.get(typeName);
+    const typeInfo = roadTypeMap.get(typeName);
+    const tex = (typeInfo && typeInfo.texture) ? loadTextureFromPool(typeInfo.texture) : null;
+    texCache.set(typeName, tex);
+    return tex;
+  }
+
+  const group = new THREE.Group();
+  let baseRenderOrder = 10;
+
+  // Build meshes in the game's draw order so junctions render last
+  for (const drawType of ROAD_DRAW_ORDER) {
+    for (const [, bucket] of buckets) {
+      if (bucket.segType !== drawType) continue;
+
+      const allPos = [], allUV = [], allIdx = [];
+      let vertOff = 0;
+
+      for (const seg of bucket.segs) {
+        const quad = buildRoadQuadGeo(seg, playH);
+        if (!quad) continue;
+        allPos.push(...quad.positions);
+        allUV.push(...quad.uvs);
+        for (const idx of quad.indices) allIdx.push(idx + vertOff);
+        vertOff += quad.positions.length / 3;
+      }
+
+      if (allPos.length === 0) continue;
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(allPos, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(allUV, 2));
+      geo.setIndex(allIdx);
+      geo.computeVertexNormals();
+
+      const tex = getTexForType(bucket.typeName);
+      const mat = new THREE.MeshLambertMaterial({
+        color: tex ? 0xffffff : 0x666666,
+        map: tex || null,
+        transparent: true,
+        alphaTest: tex ? 0.1 : 0,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+      });
+
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.receiveShadow = true;
+      mesh.castShadow = false;
+      mesh.renderOrder = baseRenderOrder;
+      group.add(mesh);
+    }
+    baseRenderOrder++;
+  }
+
+  return group.children.length > 0 ? group : null;
+}
+
+// ─── Object Markers ─────────────────────────────────────────────────────
+
+function buildObjectMarkers(objects, fullW, fullH, border) {
+  if (!objects || objects.length === 0) return;
+
+  const hasW3D = w3dFileIndex.size > 0;
+
+  const markerGeo = new THREE.BoxGeometry(6, 6, 6);
+  const matStructure = new THREE.MeshLambertMaterial({ color: 0xff4444 });
+  const matUnit      = new THREE.MeshLambertMaterial({ color: 0x44aaff });
+  const matCivilian  = new THREE.MeshLambertMaterial({ color: 0xffaa44 });
+  const matOther     = new THREE.MeshLambertMaterial({ color: 0xaaaaaa });
+
+  const playH = fullH - 2 * border;
+
+  const instanceLimit = 5000;
+  const visibleObjects = objects.filter(o =>
+    !(o.flags & 0x100) && !(o.flags & FLAG_ROAD_FLAGS) && !(o.flags & FLAG_BRIDGE_FLAGS)
+  ).slice(0, instanceLimit);
+
+  let loadedCount = 0, fallbackCount = 0;
+
+  for (const obj of visibleObjects) {
+    const wx = obj.x;
+    const wz = (playH - 1) * MAP_XY_FACTOR - obj.y;
+    const wy = (obj.z && Math.abs(obj.z) > 0.1) ? obj.z * MAP_HEIGHT_SCALE : getTerrainHeightAt(obj.x, obj.y);
+
+    let placed = false;
+
+    if (hasW3D) {
+      const w3dPath = findW3DForObject(obj.name);
+      if (w3dPath) {
+        const template = loadW3DModel(w3dPath);
+        if (template) {
+          const model = template.clone();
+          model.position.set(wx, wy, wz);
+          if (obj.angle) model.rotation.y = obj.angle;
+          model.traverse(child => {
+            if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; }
+          });
+          const kindOf = objectKindOfMap.get(obj.name.toLowerCase());
+          model.userData = { name: obj.name, w3d: w3dPath, kindOf: kindOf || null };
+          objectMarkers.add(model);
+          loadedCount++;
+          placed = true;
+        }
+      }
+    }
+
+    if (!placed) {
+      let mat = matOther;
+      const lname = obj.name.toLowerCase();
+      if (lname.includes('structure') || lname.includes('building') || lname.includes('commandcenter') ||
+          lname.includes('barracks') || lname.includes('factory') || lname.includes('power') ||
+          lname.includes('supply') || lname.includes('techbuilding'))
+        mat = matStructure;
+      else if (lname.includes('vehicle') || lname.includes('infantry') || lname.includes('tank') ||
+               lname.includes('unit') || lname.includes('soldier'))
+        mat = matUnit;
+      else if (lname.includes('civilian') || lname.includes('civ'))
+        mat = matCivilian;
+
+      const marker = new THREE.Mesh(markerGeo, mat);
+      marker.castShadow = true;
+      marker.receiveShadow = true;
+      marker.position.set(wx, wy + 3, wz);
+      const kindOf = objectKindOfMap.get(obj.name.toLowerCase());
+      marker.userData = { name: obj.name, kindOf: kindOf || null };
+      objectMarkers.add(marker);
+      fallbackCount++;
+    }
+  }
+
+  if (hasW3D) {
+    console.log(`Objects: ${loadedCount} W3D models loaded, ${fallbackCount} fallback cubes`);
+  }
+
+  // Hide light meshes unless it's night (todIndex 3)
+  const todIndex = currentMapData?.lighting?.todIndex ?? 1;
+  updateLightMeshVisibility(todIndex === 3);
+}
+
+function updateTerrainColors() {
+  if (!terrainMesh || !currentMapData) return;
+
+  // Switch to textured material
+  if (colorMode === 'texture' && terrainMatTextured) {
+    terrainMesh.material = terrainMatTextured;
+    terrainMesh.material.wireframe = terrainMatColored.wireframe;
+    return;
+  }
+
+  // Switch to vertex-color material and recompute colors
+  terrainMesh.material = terrainMatColored;
+
+  const hm = currentMapData.heightMap;
+  const bt = currentMapData.blendTileData;
+  const width = hm.width;
+  const height = hm.height;
+  const cellsX = width - 1;
+  const cellsY = height - 1;
+
+  let minH = 255, maxH = 0;
+  for (let i = 0; i < hm.data.length; i++) {
+    if (hm.data[i] < minH) minH = hm.data[i];
+    if (hm.data[i] > maxH) maxH = hm.data[i];
+  }
+
+  const colorsAttr = terrainGeo.getAttribute('color');
+  const baseColor = new THREE.Color();
+  const blendColor = new THREE.Color();
+  const extraColor = new THREE.Color();
+  const cornerColor = new THREE.Color();
+
+  for (let cy = 0; cy < cellsY; cy++) {
+    for (let cx = 0; cx < cellsX; cx++) {
+      const cellIdx = cy * cellsX + cx;
+      const vi = cellIdx * 4;
+      const ndx = cy * width + cx;
+
+      computeCellColor(ndx, bt, hm, minH, maxH, baseColor);
+
+      let blendAlphas = null;
+      if (bt && ndx < bt.blendTileNdxes.length) {
+        const blendTileIdx = bt.blendTileNdxes[ndx];
+        if (blendTileIdx > 0 && bt.blendedTiles && blendTileIdx < bt.blendedTiles.length) {
+          blendAlphas = computeBlendAlphas(bt.blendedTiles[blendTileIdx]);
+          colorForTileNdx(bt.blendedTiles[blendTileIdx].blendNdx, bt, blendColor);
+        }
+      }
+
+      let extraAlphas = null;
+      if (bt && bt.extraBlendTileNdxes && ndx < bt.extraBlendTileNdxes.length) {
+        const extraIdx = bt.extraBlendTileNdxes[ndx];
+        if (extraIdx > 0 && bt.blendedTiles && extraIdx < bt.blendedTiles.length) {
+          extraAlphas = computeBlendAlphas(bt.blendedTiles[extraIdx]);
+          colorForTileNdx(bt.blendedTiles[extraIdx].blendNdx, bt, extraColor);
+        }
+      }
+
+      for (let c = 0; c < 4; c++) {
+        cornerColor.copy(baseColor);
+        if (blendAlphas && blendAlphas[c] > 0) cornerColor.lerp(blendColor, blendAlphas[c] / 255);
+        if (extraAlphas && extraAlphas[c] > 0) cornerColor.lerp(extraColor, extraAlphas[c] / 255);
+        colorsAttr.setXYZ(vi + c, cornerColor.r, cornerColor.g, cornerColor.b);
+      }
+    }
+  }
+  colorsAttr.needsUpdate = true;
+}
+
+function applyTimeOfDay(todIndex) {
+  if (!currentMapData || !currentMapData.lighting) return;
+  const entries = currentMapData.lighting.entries;
+  if (!entries || todIndex < 0 || todIndex >= entries.length) return;
+
+  const todData = entries[todIndex];
+  const lu = extractLightUniforms(todData);
+
+  // Update the shader material uniforms
+  if (terrainMatTextured) {
+    const u = terrainMatTextured.uniforms;
+    u.ambientColor.value.copy(lu.ambientColor);
+    u.numLights.value = lu.numLights;
+    u.diffuseColor0.value.copy(lu.diffuseColors[0]);
+    u.diffuseColor1.value.copy(lu.diffuseColors[1]);
+    u.diffuseColor2.value.copy(lu.diffuseColors[2]);
+    u.lightDir0.value.copy(lu.lightDirs[0]);
+    u.lightDir1.value.copy(lu.lightDirs[1]);
+    u.lightDir2.value.copy(lu.lightDirs[2]);
+  }
+
+  // Rebuild scene lights (including shadow-casting sun)
+  const hm = currentMapData.heightMap;
+  const border = hm.borderSize;
+  const playW = hm.width - 2 * border;
+  const playH = hm.height - 2 * border;
+  let minH = 255, maxH = 0;
+  for (let i = 0; i < hm.data.length; i++) {
+    if (hm.data[i] < minH) minH = hm.data[i];
+    if (hm.data[i] > maxH) maxH = hm.data[i];
+  }
+  setupSceneLights(todData, playW, playH, minH, maxH);
+
+  // Show/hide light meshes based on time of day (night = index 3)
+  const isNight = (todIndex === 3);
+  updateLightMeshVisibility(isNight);
+
+  // Force shader recompilation to pick up new shadow map uniforms
+  if (terrainMatTextured) terrainMatTextured.needsUpdate = true;
+  if (terrainMatColored) terrainMatColored.needsUpdate = true;
+}
+
+function updateLightMeshVisibility(isNight) {
+  objectMarkers.traverse(child => {
+    if (child.isMesh && child.userData.isLightMesh) {
+      child.visible = isNight;
+    }
+  });
+}
+
+function updateHeightScale(scale) {
+  if (!terrainMesh || !currentMapData) return;
+  const hm = currentMapData.heightMap;
+  const width = hm.width;
+  const height = hm.height;
+  const cellsX = width - 1;
+  const cellsY = height - 1;
+
+  const positions = terrainGeo.getAttribute('position');
+  const cornerGx = [0, 1, 1, 0];
+  const cornerGy = [0, 0, 1, 1];
+
+  for (let cy = 0; cy < cellsY; cy++) {
+    for (let cx = 0; cx < cellsX; cx++) {
+      const cellIdx = cy * cellsX + cx;
+      const vi = cellIdx * 4;
+      for (let c = 0; c < 4; c++) {
+        const gx = cx + cornerGx[c];
+        const gy = cy + cornerGy[c];
+        const heightVal = hm.data[gy * width + gx];
+        positions.setY(vi + c, heightVal * MAP_HEIGHT_SCALE * scale);
+      }
+    }
+  }
+  positions.needsUpdate = true;
+  terrainGeo.computeVertexNormals();
+}
+
+// ─── UI ─────────────────────────────────────────────────────────────────
+
+function showError(msg) {
+  const toast = document.getElementById('error-toast');
+  toast.textContent = msg;
+  toast.classList.add('visible');
+  setTimeout(() => toast.classList.remove('visible'), 5000);
+}
+
+function populateInfoPanel(mapData, stats) {
+  const hm = mapData.heightMap;
+  const panel = document.getElementById('panel');
+  const grid = document.getElementById('info-grid');
+  panel.style.display = 'block';
+  document.getElementById('toolbar').style.display = 'flex';
+
+  const info = [
+    ['Playable Area', `${stats.playW} × ${stats.playH}`],
+    ['Full Grid', `${hm.width} × ${hm.height}`],
+    ['Border', `${hm.borderSize}`],
+    ['Height Range', `${stats.minH} – ${stats.maxH}`],
+    ['Objects', `${mapData.objects.filter(o => !(o.flags & FLAG_ROAD_FLAGS)).length}${w3dFileIndex.size > 0 ? ` (${w3dFileIndex.size} W3D available)` : ''}`],
+    ['Roads', `${extractRoadSegments(mapData.objects).length} segments`],  
+    ['Terrain Types', `${mapData.blendTileData?.textureClasses.length || 0}`],
+    ['Water Areas', `${mapData.polygonTriggers.filter(t => t.isWaterArea).length}`],
+    ['Textures', terrainAtlas ? `Atlas ${terrainAtlas.atlasW}x${terrainAtlas.atlasH}` : (bigFilePool.size > 0 ? 'BIG loaded, textures missing' : 'Drop Terrain.big')],
+    ['Time of Day', ['Morning', 'Afternoon', 'Evening', 'Night'][mapData.lighting?.todIndex ?? 1]],
+  ];
+
+  grid.innerHTML = info.map(([label, value]) =>
+    `<span class="label">${label}</span><span class="value">${value}</span>`
+  ).join('');
+
+  // Sync TOD selector with map's stored value
+  const todSel = document.getElementById('time-of-day');
+  todSel.value = String(mapData.lighting?.todIndex ?? 1);
+
+  // Terrain legend
+  const legend = document.getElementById('terrain-legend');
+  if (mapData.blendTileData?.textureClasses) {
+    const classes = mapData.blendTileData.textureClasses;
+    legend.innerHTML = '<div style="color:#8b949e;font-size:12px;margin-bottom:6px">Terrain Types</div>' +
+      classes.map(tc => {
+        const c = getTerrainColor(tc.name);
+        const hex = '#' + c.toString(16).padStart(6, '0');
+        const displayName = tc.name.replace(/\.tga$/i, '');
+        return `<div class="item"><div class="swatch" style="background:${hex}"></div>${displayName}</div>`;
+      }).join('');
+  }
+}
+
+async function handleDroppedFiles(files) {
+  const loading = document.getElementById('loading');
+  loading.classList.add('active');
+
+  try {
+    // Process BIG files first so textures are ready when the map loads
+    let mapFile = null;
+    for (const file of files) {
+      const headerBuf = await file.slice(0, 4).arrayBuffer();
+      const magic = String.fromCharCode(...new Uint8Array(headerBuf));
+      if (magic === 'BIGF' || magic === 'BIG4') {
+        document.querySelector('#loading p').textContent = `Loading ${file.name}...`;
+        await new Promise(r => setTimeout(r, 50));
+        const buf = await file.arrayBuffer();
+        parseBigFile(buf, file.name);
+
+        document.getElementById('btn-list-big').style.display = '';
+
+        // If a map is already loaded, rebuild with textures
+        if (currentMapData && scene) {
+          const stats = buildTerrain(currentMapData);
+          populateInfoPanel(currentMapData, stats);
+        }
+      } else {
+        mapFile = file;
+      }
+    }
+
+    if (mapFile) {
+      document.querySelector('#loading p').textContent = 'Parsing map file...';
+      await new Promise(r => setTimeout(r, 50));
+
+      const buffer = await mapFile.arrayBuffer();
+      let data = await tryDecompress(buffer);
+      if (!data) { loading.classList.remove('active'); return; }
+
+      await new Promise(r => setTimeout(r, 50));
+      const mapData = parseMapFile(data);
+
+      if (!scene) initThree();
+      const stats = buildTerrain(mapData);
+
+      document.getElementById('drop-overlay').classList.add('hidden');
+      document.getElementById('viewer').classList.add('active');
+
+      const name = mapFile.name.replace(/\.map$/i, '');
+      document.getElementById('map-name').textContent = name;
+      populateInfoPanel(mapData, stats);
+
+      console.log('Map loaded:', mapData);
+    } else if (bigFilePool.size > 0) {
+      document.getElementById('drop-overlay').classList.remove('hidden');
+      const hasIni = terrainTypeMap.size > 0;
+      document.querySelector('#drop-zone p').textContent =
+        `BIG loaded (${bigFilePool.size} files${hasIni ? `, ${terrainTypeMap.size} terrain mappings` : ', no Terrain.ini found — also drop ini.big for best results'}) — now drop a .map file`;
+    }
+  } catch (e) {
+    console.error('Failed to load:', e);
+    showError(`Failed to load: ${e.message}`);
+  } finally {
+    document.querySelector('#loading p').textContent = 'Parsing map file...';
+    loading.classList.remove('active');
+  }
+}
+
+// ─── Event Handlers ─────────────────────────────────────────────────────
+
+const dropZone = document.getElementById('drop-zone');
+const dropOverlay = document.getElementById('drop-overlay');
+
+document.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); });
+document.addEventListener('drop', e => { e.preventDefault(); e.stopPropagation(); });
+
+dropOverlay.addEventListener('dragenter', () => dropZone.classList.add('drag-over'));
+dropOverlay.addEventListener('dragleave', e => {
+  if (!dropOverlay.contains(e.relatedTarget)) dropZone.classList.remove('drag-over');
+});
+dropOverlay.addEventListener('drop', e => {
+  dropZone.classList.remove('drag-over');
+  const files = e.dataTransfer?.files;
+  if (files && files.length > 0) handleDroppedFiles(Array.from(files));
+});
+
+// Also handle drop on the viewer canvas for loading a new map or BIG
+document.getElementById('viewer').addEventListener('drop', e => {
+  e.preventDefault();
+  const files = e.dataTransfer?.files;
+  if (files && files.length > 0) handleDroppedFiles(Array.from(files));
+});
+document.getElementById('viewer').addEventListener('dragover', e => e.preventDefault());
+
+// Controls
+document.getElementById('toggle-wireframe').addEventListener('click', function() {
+  this.classList.toggle('active');
+  const wf = this.classList.contains('active');
+  if (terrainMatColored) terrainMatColored.wireframe = wf;
+  if (terrainMatTextured) terrainMatTextured.wireframe = wf;
+});
+
+document.getElementById('toggle-objects').addEventListener('click', function() {
+  this.classList.toggle('active');
+  objectMarkers.visible = this.classList.contains('active');
+});
+
+document.getElementById('toggle-water').addEventListener('click', function() {
+  this.classList.toggle('active');
+  if (waterPlane) waterPlane.visible = this.classList.contains('active');
+});
+
+document.getElementById('toggle-roads').addEventListener('click', function() {
+  this.classList.toggle('active');
+  if (roadMesh) roadMesh.visible = this.classList.contains('active');
+});
+
+document.getElementById('toggle-shadows').addEventListener('click', function() {
+  this.classList.toggle('active');
+  const enabled = this.classList.contains('active');
+  renderer.shadowMap.enabled = enabled;
+  if (sunLight) sunLight.castShadow = enabled;
+  // Force material recompilation
+  if (terrainMatColored) terrainMatColored.needsUpdate = true;
+  if (terrainMatTextured) terrainMatTextured.needsUpdate = true;
+});
+
+document.getElementById('toggle-edge-scroll').addEventListener('click', function() {
+  this.classList.toggle('active');
+  camState.edgeScrollEnabled = this.classList.contains('active');
+});
+
+document.getElementById('height-scale').addEventListener('input', function() {
+  currentHeightScale = parseFloat(this.value);
+  document.getElementById('height-scale-value').textContent = currentHeightScale.toFixed(1) + 'x';
+  updateHeightScale(currentHeightScale);
+});
+
+document.getElementById('color-mode').addEventListener('change', function() {
+  colorMode = this.value;
+  updateTerrainColors();
+});
+
+document.getElementById('time-of-day').addEventListener('change', function() {
+  applyTimeOfDay(parseInt(this.value));
+});
+
+document.getElementById('btn-reset-camera').addEventListener('click', () => {
+  if (!currentMapData) return;
+  const hm = currentMapData.heightMap;
+  const border = hm.borderSize;
+  const playW = hm.width - 2 * border;
+  const playH = hm.height - 2 * border;
+  const centerX = (playW * MAP_XY_FACTOR) / 2;
+  const centerZ = (playH * MAP_XY_FACTOR) / 2;
+  const mapSize = Math.max(playW, playH) * MAP_XY_FACTOR;
+  camState.target.set(centerX, 0, centerZ);
+  camState.height = Math.min(CAM_MAX_HEIGHT, mapSize * 0.35);
+  camState.yaw = Math.PI * 0.75;
+  camState.pitch = CAM_DEFAULT_PITCH;
+  camState.velocity.set(0, 0, 0);
+});
+
+document.getElementById('btn-load-new').addEventListener('click', () => {
+  document.getElementById('drop-overlay').classList.remove('hidden');
+});
+
+document.getElementById('btn-list-big').addEventListener('click', () => {
+  if (bigFilePool.size === 0) { showError('No BIG files loaded'); return; }
+  const paths = listAllBigFiles();
+  const terrainTGAs = paths.filter(p => p.startsWith('art/terrain/') && p.endsWith('.tga'));
+  alert(`${bigFilePool.size} files in BIG pool.\n${terrainTGAs.length} terrain TGAs.\n${terrainTypeMap.size} INI terrain mappings.\n\nFull list logged to browser console (F12).`);
+});
+
+</script>
+</body>
+</html>
