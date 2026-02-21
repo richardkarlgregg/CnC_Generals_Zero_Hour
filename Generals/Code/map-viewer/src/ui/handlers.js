@@ -1,6 +1,6 @@
 import state from '../state.js';
 import { MAP_XY_FACTOR } from '../constants.js';
-import { bigFilePool, listAllBigFiles, terrainTypeMap } from '../parsers/big.js';
+import { bigFilePool, listAllBigFiles, terrainTypeMap, looseFilePool } from '../parsers/big.js';
 import { updateTerrainColors, updateHeightScale } from '../terrain/update.js';
 import { applyTimeOfDay } from '../engine/lighting.js';
 import { camState, CAM_DEFAULT_PITCH, CAM_MAX_HEIGHT } from '../engine/camera.js';
@@ -20,14 +20,12 @@ export function setupEventHandlers() {
   });
   dropOverlay.addEventListener('drop', e => {
     dropZone.classList.remove('drag-over');
-    const files = e.dataTransfer?.files;
-    if (files && files.length > 0) handleDroppedFiles(Array.from(files));
+    if (e.dataTransfer?.files?.length > 0) handleDroppedFiles(e.dataTransfer);
   });
 
   document.getElementById('viewer').addEventListener('drop', e => {
     e.preventDefault();
-    const files = e.dataTransfer?.files;
-    if (files && files.length > 0) handleDroppedFiles(Array.from(files));
+    if (e.dataTransfer?.files?.length > 0) handleDroppedFiles(e.dataTransfer);
   });
   document.getElementById('viewer').addEventListener('dragover', e => e.preventDefault());
 
@@ -103,9 +101,13 @@ export function setupEventHandlers() {
   });
 
   document.getElementById('btn-list-big').addEventListener('click', () => {
-    if (bigFilePool.size === 0) { showError('No BIG files loaded'); return; }
+    if (bigFilePool.size === 0) { showError('No files loaded'); return; }
     const paths = listAllBigFiles();
     const terrainTGAs = paths.filter(p => p.startsWith('art/terrain/') && p.endsWith('.tga'));
-    alert(`${bigFilePool.size} files in BIG pool.\n${terrainTGAs.length} terrain TGAs.\n${terrainTypeMap.size} INI terrain mappings.\n\nFull list logged to browser console (F12).`);
+    const looseCount = looseFilePool.size;
+    let msg = `${bigFilePool.size} files in pool.\n${terrainTGAs.length} terrain TGAs.\n${terrainTypeMap.size} INI terrain mappings.`;
+    if (looseCount > 0) msg += `\n${looseCount} loose file override(s) (marked [OVERRIDE] in console).`;
+    msg += '\n\nFull list logged to browser console (F12).';
+    alert(msg);
   });
 }

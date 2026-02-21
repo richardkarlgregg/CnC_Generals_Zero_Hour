@@ -1,5 +1,56 @@
 export const bigFilePool = new Map();
 export const terrainTypeMap = new Map();
+export const looseFilePool = new Map();
+
+const ASSET_EXTENSIONS = new Set([
+  '.tga', '.dds', '.bmp', '.jpg', '.jpeg', '.png',
+  '.w3d', '.wak', '.wnd',
+  '.ini', '.str', '.csf', '.xml',
+]);
+
+export function isAssetFile(filename) {
+  const ext = filename.toLowerCase().match(/\.[^.]+$/)?.[0];
+  return ext ? ASSET_EXTENSIONS.has(ext) : false;
+}
+
+export function addLooseFile(path, arrayBuffer) {
+  const key = path.toLowerCase().replace(/\\/g, '/');
+  const entry = { buffer: arrayBuffer, offset: 0, size: arrayBuffer.byteLength };
+  bigFilePool.set(key, entry);
+  looseFilePool.set(key, entry);
+  return key;
+}
+
+export function addLooseFileByFilename(filename, arrayBuffer) {
+  const lowerName = filename.toLowerCase();
+  const addedPaths = [];
+
+  for (const [path] of bigFilePool) {
+    if (path.endsWith('/' + lowerName) || path === lowerName) {
+      addedPaths.push(addLooseFile(path, arrayBuffer));
+    }
+  }
+
+  if (addedPaths.length === 0) {
+    const ext = lowerName.match(/\.[^.]+$/)?.[0] || '';
+    let inferredPath;
+    if (['.tga', '.dds', '.bmp'].includes(ext)) {
+      inferredPath = `art/terrain/${lowerName}`;
+    } else if (ext === '.w3d' || ext === '.wak') {
+      inferredPath = `art/w3d/${lowerName}`;
+    } else if (ext === '.ini') {
+      inferredPath = `data/ini/${lowerName}`;
+    } else {
+      inferredPath = lowerName;
+    }
+    addedPaths.push(addLooseFile(inferredPath, arrayBuffer));
+    console.log(`No BIG match for "${lowerName}", added at inferred path: ${inferredPath}`);
+  } else {
+    console.log(`Overriding ${addedPaths.length} BIG entry(s) for "${lowerName}":`, addedPaths);
+  }
+
+  return addedPaths;
+}
 
 export function parseBigFile(buffer, filename) {
   const view = new DataView(buffer);
@@ -40,7 +91,7 @@ export function getFileData(path) {
   return new Uint8Array(info.buffer, info.offset, info.size);
 }
 
-function parseTerrainIniFromPool() {
+export function parseTerrainIniFromPool() {
   const iniPaths = [
     'data/ini/terrain.ini',
     'data/ini/default/terrain.ini',
@@ -100,10 +151,12 @@ function listTerrainFiles() {
 
 export function listAllBigFiles() {
   const paths = Array.from(bigFilePool.keys()).sort();
-  console.groupCollapsed(`All files in BIG pool (${paths.length})`);
+  const looseCount = looseFilePool.size;
+  console.groupCollapsed(`All files in pool (${paths.length} total, ${looseCount} overrides)`);
   for (const p of paths) {
     const info = bigFilePool.get(p);
-    console.log(`${p}  (${info.size} bytes)`);
+    const isOverride = looseFilePool.has(p);
+    console.log(`${isOverride ? '[OVERRIDE] ' : ''}${p}  (${info.size} bytes)`);
   }
   console.groupEnd();
   return paths;

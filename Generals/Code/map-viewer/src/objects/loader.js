@@ -28,6 +28,18 @@ function w3dMeshToThreeJS(w3dMesh) {
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(flippedUVs, 2));
   }
 
+  const hasVertexColors = !!w3dMesh.vertexColors;
+  if (hasVertexColors) {
+    const vc = w3dMesh.vertexColors;
+    const rgb = new Float32Array((vc.length / 4) * 3);
+    for (let i = 0; i < vc.length / 4; i++) {
+      rgb[i * 3]     = vc[i * 4];
+      rgb[i * 3 + 1] = vc[i * 4 + 1];
+      rgb[i * 3 + 2] = vc[i * 4 + 2];
+    }
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(rgb, 3));
+  }
+
   geo.setIndex(new THREE.BufferAttribute(w3dMesh.triangles, 1));
   if (!w3dMesh.normals) geo.computeVertexNormals();
 
@@ -46,10 +58,12 @@ function w3dMeshToThreeJS(w3dMesh) {
         material = new THREE.MeshBasicMaterial({
           map: tex, transparent: true, depthWrite: false,
           blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+          vertexColors: hasVertexColors,
         });
       } else if (isPrelitUnlit) {
         material = new THREE.MeshBasicMaterial({
           map: tex, transparent: true, depthWrite: false,
+          vertexColors: hasVertexColors,
         });
       } else {
         const hasAlpha = texName.toLowerCase().includes('alpha') ||
@@ -58,6 +72,7 @@ function w3dMeshToThreeJS(w3dMesh) {
                          texName.toLowerCase().includes('shrub');
         material = new THREE.MeshLambertMaterial({
           map: tex, transparent: hasAlpha, alphaTest: hasAlpha ? 0.3 : 0,
+          vertexColors: hasVertexColors,
         });
       }
     } else if (isLight) {
@@ -69,11 +84,12 @@ function w3dMeshToThreeJS(w3dMesh) {
       material = new THREE.MeshBasicMaterial({
         color: 0xffffaa, transparent: true, opacity: 0.6,
         depthWrite: false, blending: THREE.AdditiveBlending,
+        vertexColors: hasVertexColors,
       });
     } else {
       material = isPrelitUnlit
-        ? new THREE.MeshBasicMaterial({ color: 0xffffcc })
-        : new THREE.MeshLambertMaterial({ color: 0xcccccc });
+        ? new THREE.MeshBasicMaterial({ color: hasVertexColors ? 0xffffff : 0xffffcc, vertexColors: hasVertexColors })
+        : new THREE.MeshLambertMaterial({ color: hasVertexColors ? 0xffffff : 0xcccccc, vertexColors: hasVertexColors });
     }
   }
 
