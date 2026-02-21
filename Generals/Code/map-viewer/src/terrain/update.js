@@ -21,27 +21,35 @@ export function getTerrainHeightAt(worldX, worldY) {
   return (h00 * (1 - fx) * (1 - fy) + h10 * fx * (1 - fy) + h01 * (1 - fx) * fy + h11 * fx * fy) * MAP_HEIGHT_SCALE;
 }
 
+const INVERTED_MASK = 0x1;
+const FLIPPED_MASK = 0x2;
+
 export function computeBlendAlphas(bi) {
   const a = [0, 0, 0, 0];
+  let needFlip = false;
   if (bi.horiz) {
-    if (bi.inverted & 1) { a[0] = 255; a[3] = 255; }
-    else                  { a[1] = 255; a[2] = 255; }
+    needFlip = !!(bi.inverted & FLIPPED_MASK);
+    if (bi.inverted & INVERTED_MASK) { a[0] = 255; a[3] = 255; }
+    else                              { a[1] = 255; a[2] = 255; }
   }
   if (bi.vert) {
-    if (bi.inverted & 1) { a[0] = 255; a[1] = 255; }
-    else                  { a[2] = 255; a[3] = 255; }
+    needFlip = !!(bi.inverted & FLIPPED_MASK);
+    if (bi.inverted & INVERTED_MASK) { a[0] = 255; a[1] = 255; }
+    else                              { a[2] = 255; a[3] = 255; }
   }
   if (bi.rightDiagonal) {
-    if (bi.inverted & 1) {
+    if (bi.inverted & INVERTED_MASK) {
       a[1] = 255;
       if (bi.longDiagonal) { a[0] = 255; a[2] = 255; }
     } else {
+      needFlip = true;
       a[2] = 255;
       if (bi.longDiagonal) { a[1] = 255; a[3] = 255; }
     }
   }
   if (bi.leftDiagonal) {
-    if (bi.inverted & 1) {
+    if (bi.inverted & INVERTED_MASK) {
+      needFlip = true;
       a[0] = 255;
       if (bi.longDiagonal) { a[1] = 255; a[3] = 255; }
     } else {
@@ -49,8 +57,11 @@ export function computeBlendAlphas(bi) {
       if (bi.longDiagonal) { a[0] = 255; a[2] = 255; }
     }
   }
-  if (bi.customBlendEdgeClass >= 0) { a[0] = a[1] = a[2] = a[3] = 0; }
-  return a;
+  if (bi.customBlendEdgeClass >= 0) {
+    a[0] = a[1] = a[2] = a[3] = 0;
+    needFlip = false;
+  }
+  return { alphas: a, needFlip };
 }
 
 export function colorForTileNdx(tileNdx, bt, outColor) {
@@ -129,7 +140,7 @@ export function updateTerrainColors() {
       if (bt && ndx < bt.blendTileNdxes.length) {
         const blendTileIdx = bt.blendTileNdxes[ndx];
         if (blendTileIdx > 0 && bt.blendedTiles && blendTileIdx < bt.blendedTiles.length) {
-          blendAlphas = computeBlendAlphas(bt.blendedTiles[blendTileIdx]);
+          blendAlphas = computeBlendAlphas(bt.blendedTiles[blendTileIdx]).alphas;
           colorForTileNdx(bt.blendedTiles[blendTileIdx].blendNdx, bt, blendColor);
         }
       }
@@ -138,7 +149,7 @@ export function updateTerrainColors() {
       if (bt && bt.extraBlendTileNdxes && ndx < bt.extraBlendTileNdxes.length) {
         const extraIdx = bt.extraBlendTileNdxes[ndx];
         if (extraIdx > 0 && bt.blendedTiles && extraIdx < bt.blendedTiles.length) {
-          extraAlphas = computeBlendAlphas(bt.blendedTiles[extraIdx]);
+          extraAlphas = computeBlendAlphas(bt.blendedTiles[extraIdx]).alphas;
           colorForTileNdx(bt.blendedTiles[extraIdx].blendNdx, bt, extraColor);
         }
       }

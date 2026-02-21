@@ -136,11 +136,14 @@ export function buildTerrain(mapData) {
 
       let blendAlphas = null;
       let blendTileNdx = 0;
+      let cellNeedFlip = false;
       if (bt && ndx < bt.blendTileNdxes.length) {
         const blendTileIdx = bt.blendTileNdxes[ndx];
         if (blendTileIdx > 0 && bt.blendedTiles && blendTileIdx < bt.blendedTiles.length) {
           const bi = bt.blendedTiles[blendTileIdx];
-          blendAlphas = computeBlendAlphas(bi);
+          const result = computeBlendAlphas(bi);
+          blendAlphas = result.alphas;
+          cellNeedFlip = result.needFlip;
           blendTileNdx = bi.blendNdx;
           colorForTileNdx(bi.blendNdx, bt, blendColor);
         }
@@ -152,7 +155,7 @@ export function buildTerrain(mapData) {
         const extraIdx = bt.extraBlendTileNdxes[ndx];
         if (extraIdx > 0 && bt.blendedTiles && extraIdx < bt.blendedTiles.length) {
           const ebi = bt.blendedTiles[extraIdx];
-          extraAlphas = computeBlendAlphas(ebi);
+          extraAlphas = computeBlendAlphas(ebi).alphas;
           extraTileNdx = ebi.blendNdx;
           colorForTileNdx(ebi.blendNdx, bt, extraColor);
         }
@@ -174,15 +177,19 @@ export function buildTerrain(mapData) {
           const uv = getQuadrantUV(baseTileNdx, c, state.terrainAtlas);
           baseUVs[(vi + c) * 2]     = uv[0];
           baseUVs[(vi + c) * 2 + 1] = uv[1];
+        }
 
-          if (blendAlphas && blendAlphas[c] > 0) {
+        if (blendAlphas) {
+          for (let c = 0; c < 4; c++) {
             const buv = getQuadrantUV(blendTileNdx, c, state.terrainAtlas);
             blendUVs[(vi + c) * 2]     = buv[0];
             blendUVs[(vi + c) * 2 + 1] = buv[1];
             blendAlphaArr[vi + c] = blendAlphas[c] / 255;
           }
+        }
 
-          if (extraAlphas && extraAlphas[c] > 0) {
+        if (extraAlphas) {
+          for (let c = 0; c < 4; c++) {
             const euv = getQuadrantUV(extraTileNdx, c, state.terrainAtlas);
             extraUVs[(vi + c) * 2]     = euv[0];
             extraUVs[(vi + c) * 2 + 1] = euv[1];
@@ -192,8 +199,13 @@ export function buildTerrain(mapData) {
       }
 
       const ii = cellIdx * 6;
-      indices[ii]     = vi;     indices[ii + 1] = vi + 1; indices[ii + 2] = vi + 2;
-      indices[ii + 3] = vi;     indices[ii + 4] = vi + 2; indices[ii + 5] = vi + 3;
+      if (cellNeedFlip) {
+        indices[ii]     = vi + 1; indices[ii + 1] = vi + 3; indices[ii + 2] = vi;
+        indices[ii + 3] = vi + 1; indices[ii + 4] = vi + 2; indices[ii + 5] = vi + 3;
+      } else {
+        indices[ii]     = vi;     indices[ii + 1] = vi + 1; indices[ii + 2] = vi + 2;
+        indices[ii + 3] = vi;     indices[ii + 4] = vi + 2; indices[ii + 5] = vi + 3;
+      }
     }
   }
 
