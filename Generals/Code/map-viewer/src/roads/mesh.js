@@ -9,8 +9,9 @@ import {
   ROAD_Y, ROAD_H, ROAD_H_FLIP
 } from '../constants.js';
 
-export function loadTextureFromPool(texturePath) {
+export function loadTextureFromPool(texturePath, options) {
   if (!texturePath) return null;
+  const flipDDS = options && options.flipDDS;
   const baseName = texturePath.replace(/\.[^.]+$/, '').toLowerCase();
   const justFilename = baseName.includes('/') ? baseName.split('/').pop() : baseName;
   const candidates = [
@@ -31,6 +32,7 @@ export function loadTextureFromPool(texturePath) {
       const isDDS = entry.size > 4 && raw[0] === 0x44 && raw[1] === 0x44 && raw[2] === 0x53 && raw[3] === 0x20;
       const img = isDDS ? parseDDS(raw) : parseTGA(raw);
       const tex = new THREE.DataTexture(img.pixels, img.width, img.height, THREE.RGBAFormat);
+      if (flipDDS && isDDS) tex.flipY = true;
       tex.wrapS = THREE.RepeatWrapping;
       tex.wrapT = THREE.RepeatWrapping;
       tex.magFilter = THREE.LinearFilter;
@@ -53,6 +55,7 @@ export function loadTextureFromPool(texturePath) {
           const isDDS = entry.size > 4 && raw[0] === 0x44 && raw[1] === 0x44 && raw[2] === 0x53 && raw[3] === 0x20;
           const img = isDDS ? parseDDS(raw) : parseTGA(raw);
           const tex = new THREE.DataTexture(img.pixels, img.width, img.height, THREE.RGBAFormat);
+          if (flipDDS && isDDS) tex.flipY = true;
           tex.wrapS = THREE.RepeatWrapping;
           tex.wrapT = THREE.RepeatWrapping;
           tex.magFilter = THREE.LinearFilter;
@@ -67,8 +70,9 @@ export function loadTextureFromPool(texturePath) {
   return null;
 }
 
-export function loadTextureFromPoolWithLuminanceAlpha(texturePath) {
+export function loadTextureFromPoolWithLuminanceAlpha(texturePath, options) {
   if (!texturePath) return null;
+  const flipDDS = options && options.flipDDS;
   const baseName = texturePath.replace(/\.[^.]+$/, '').toLowerCase();
   const justFilename = baseName.includes('/') ? baseName.split('/').pop() : baseName;
   const candidates = [
@@ -77,13 +81,14 @@ export function loadTextureFromPoolWithLuminanceAlpha(texturePath) {
     'art/textures/' + baseName + '.tga', 'art/textures/' + justFilename + '.dds',
     'art/textures/' + justFilename + '.tga',
   ];
-  function makeTexFromImg(img) {
+  function makeTexFromImg(img, isDDS) {
     const px = img.pixels;
     for (let i = 0; i < px.length; i += 4) {
       const lum = px[i] * 0.299 + px[i+1] * 0.587 + px[i+2] * 0.114;
       px[i+3] = Math.min(255, (lum * 2) | 0);
     }
     const tex = new THREE.DataTexture(px, img.width, img.height, THREE.RGBAFormat);
+    if (flipDDS && isDDS) tex.flipY = true;
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
     tex.magFilter = THREE.LinearFilter;
@@ -98,7 +103,7 @@ export function loadTextureFromPoolWithLuminanceAlpha(texturePath) {
     try {
       const raw = new Uint8Array(entry.buffer, entry.offset, entry.size);
       const isDDS = entry.size > 4 && raw[0] === 0x44 && raw[1] === 0x44 && raw[2] === 0x53 && raw[3] === 0x20;
-      return makeTexFromImg(isDDS ? parseDDS(raw) : parseTGA(raw));
+      return makeTexFromImg(isDDS ? parseDDS(raw) : parseTGA(raw), isDDS);
     } catch (e) { console.warn('Failed to load luminance-alpha texture:', c, e); }
   }
   if (justFilename) {
@@ -110,7 +115,7 @@ export function loadTextureFromPoolWithLuminanceAlpha(texturePath) {
         try {
           const raw = new Uint8Array(entry.buffer, entry.offset, entry.size);
           const isDDS = entry.size > 4 && raw[0] === 0x44 && raw[1] === 0x44 && raw[2] === 0x53 && raw[3] === 0x20;
-          return makeTexFromImg(isDDS ? parseDDS(raw) : parseTGA(raw));
+          return makeTexFromImg(isDDS ? parseDDS(raw) : parseTGA(raw), isDDS);
         } catch (e) { /* skip */ }
       }
     }

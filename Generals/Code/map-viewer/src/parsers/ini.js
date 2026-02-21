@@ -60,9 +60,9 @@ function parseObjectINI(text) {
 
     if (/^\s*Draw\s*=\s*W3D/i.test(line)) { inDrawModule = true; continue; }
     if (inDrawModule && /^\s*(?:Default)?ConditionState/i.test(line)) { inConditionState = true; continue; }
-    if (inDrawModule && inConditionState) {
-      const modelMatch = line.match(/^\s*Model\s*=\s*(\S+)/i);
-      if (modelMatch && !objectModelMap.has(currentObject)) {
+    if (inDrawModule && !objectModelMap.has(currentObject)) {
+      const modelMatch = line.match(/^\s*(?:Model|ModelName)\s*=\s*(\S+)/i);
+      if (modelMatch) {
         objectModelMap.set(currentObject, modelMatch[1].toLowerCase());
       }
     }

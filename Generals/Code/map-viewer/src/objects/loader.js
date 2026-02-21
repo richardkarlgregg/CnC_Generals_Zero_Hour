@@ -20,12 +20,7 @@ function w3dMeshToThreeJS(w3dMesh) {
   }
 
   if (w3dMesh.uvs) {
-    const flippedUVs = new Float32Array(w3dMesh.uvs.length);
-    for (let i = 0; i < w3dMesh.uvs.length; i += 2) {
-      flippedUVs[i] = w3dMesh.uvs[i];
-      flippedUVs[i+1] = 1.0 - w3dMesh.uvs[i+1];
-    }
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(flippedUVs, 2));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(w3dMesh.uvs, 2));
   }
 
   const hasVertexColors = !!w3dMesh.vertexColors;
@@ -101,7 +96,7 @@ function w3dMeshToThreeJS(w3dMesh) {
 function loadW3DTexture(name) {
   const key = name.toLowerCase().replace(/\.[^.]+$/, '');
   if (w3dTextureCache.has(key)) return w3dTextureCache.get(key);
-  const tex = loadTextureFromPool(name);
+  const tex = loadTextureFromPool(name, { flipDDS: true });
   w3dTextureCache.set(key, tex);
   return tex;
 }
@@ -109,7 +104,7 @@ function loadW3DTexture(name) {
 function loadW3DTextureLuminanceAlpha(name) {
   const key = 'lum_' + name.toLowerCase().replace(/\.[^.]+$/, '');
   if (w3dTextureCache.has(key)) return w3dTextureCache.get(key);
-  const tex = loadTextureFromPoolWithLuminanceAlpha(name);
+  const tex = loadTextureFromPoolWithLuminanceAlpha(name, { flipDDS: true });
   w3dTextureCache.set(key, tex);
   return tex;
 }

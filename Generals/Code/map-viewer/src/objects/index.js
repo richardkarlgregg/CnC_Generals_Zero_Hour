@@ -60,6 +60,11 @@ export function findW3DForObject(objectName) {
     }
   }
 
+  if (!result && iniModel) {
+    const baseName = iniModel.includes('.') ? iniModel.split('.')[0] : iniModel;
+    console.warn(`W3D not found for "${objectName}": INI maps to "${iniModel}" (basename="${baseName}") but no matching W3D file`);
+  }
+
   w3dLookupCache.set(lname, result);
   return result;
 }

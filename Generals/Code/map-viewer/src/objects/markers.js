@@ -81,6 +81,22 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
 
   if (hasW3D) {
     console.log(`Objects: ${loadedCount} W3D models loaded, ${fallbackCount} fallback cubes`);
+    if (fallbackCount > 0) {
+      const unresolved = new Map();
+      for (const obj of visibleObjects) {
+        const w3dPath = findW3DForObject(obj.name);
+        if (!w3dPath) {
+          unresolved.set(obj.name, (unresolved.get(obj.name) || 0) + 1);
+        }
+      }
+      if (unresolved.size > 0) {
+        console.groupCollapsed(`Unresolved objects (${unresolved.size} unique names)`);
+        for (const [name, count] of [...unresolved].sort((a, b) => b[1] - a[1])) {
+          console.log(`  ${name} (x${count})`);
+        }
+        console.groupEnd();
+      }
+    }
   }
 
   const todIndex = state.currentMapData?.lighting?.todIndex ?? 1;
