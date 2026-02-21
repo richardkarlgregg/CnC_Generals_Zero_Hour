@@ -100,7 +100,7 @@ export function getQuadrantUV(tileNdx, corner, atlas) {
 
   const HALF = TILE_SIZE / 2;
   const qx = pos.x + (xSub ? HALF : 0);
-  const qy = pos.y + (ySub ? 0 : HALF);
+  const qy = pos.y + (ySub ? HALF : 0);
 
   const ht = 0.5;
   const minU = (qx + ht) / atlas.atlasW;
@@ -109,9 +109,9 @@ export function getQuadrantUV(tileNdx, corner, atlas) {
   const maxV = (qy + HALF - ht) / atlas.atlasH;
 
   switch (corner) {
-    case 0: return [minU, maxV];
-    case 1: return [maxU, maxV];
-    case 2: return [maxU, minV];
-    case 3: return [minU, minV];
+    case 0: return [minU, minV];
+    case 1: return [maxU, minV];
+    case 2: return [maxU, maxV];
+    case 3: return [minU, maxV];
   }
 }
