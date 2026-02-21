@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C&amp;C Generals — Map Viewer</title>
+</head>
+<body>
+
+<div id="drop-overlay">
+  <div id="drop-zone">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="1.5">
+      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+    </svg>
+    <h2>Drop a Generals .map file</h2>
+    <p>Drag &amp; drop a .map file — optionally also drop Terrain.big, Textures.big, W3D.big, INI.big</p>
+  </div>
+</div>
+
+<div id="viewer">
+  <canvas id="canvas"></canvas>
+</div>
+
+<div id="panel" style="display:none">
+  <h3>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <polygon points="1 6 12 2 23 6 23 18 12 22 1 18"/>
+      <line x1="12" y1="2" x2="12" y2="22"/>
+    </svg>
+    <span id="map-name">Map Info</span>
+  </h3>
+  <div class="info-grid" id="info-grid"></div>
+  <div class="divider"></div>
+
+  <div class="control-group">
+    <label>Wireframe <div class="toggle" id="toggle-wireframe"></div></label>
+  </div>
+  <div class="control-group">
+    <label>Objects <div class="toggle active" id="toggle-objects"></div></label>
+  </div>
+  <div class="control-group">
+    <label>Water <div class="toggle active" id="toggle-water"></div></label>
+  </div>
+  <div class="control-group">
+    <label>Roads <div class="toggle active" id="toggle-roads"></div></label>
+  </div>
+  <div class="control-group">
+    <label>Shadows <div class="toggle active" id="toggle-shadows"></div></label>
+  </div>
+  <div class="control-group">
+    <label>Edge Scroll <div class="toggle" id="toggle-edge-scroll"></div></label>
+  </div>
+  <div class="control-group">
+    <label>Height Scale</label>
+    <input type="range" id="height-scale" min="0.1" max="5" step="0.1" value="1">
+    <div class="range-value" id="height-scale-value">1.0x</div>
+  </div>
+  <div class="control-group">
+    <label>Color Mode</label>
+    <select id="color-mode" style="background:#21262d;border:1px solid rgba(255,255,255,0.1);color:#c9d1d9;padding:4px 8px;border-radius:6px;margin-top:6px;width:100%;font-size:13px">
+      <option value="texture">Textured (requires Terrain.big)</option>
+      <option value="terrain">Terrain Type</option>
+      <option value="height">Height Gradient</option>
+      <option value="normal">Normal Shading</option>
+    </select>
+  </div>
+  <div class="control-group">
+    <label>Time of Day</label>
+    <select id="time-of-day" style="background:#21262d;border:1px solid rgba(255,255,255,0.1);color:#c9d1d9;padding:4px 8px;border-radius:6px;margin-top:6px;width:100%;font-size:13px">
+      <option value="0">Morning</option>
+      <option value="1" selected>Afternoon</option>
+      <option value="2">Evening</option>
+      <option value="3">Night</option>
+    </select>
+  </div>
+
+  <div class="divider"></div>
+  <div class="terrain-legend" id="terrain-legend"></div>
+</div>
+
+<div id="toolbar" style="display:none">
+  <button id="btn-reset-camera">Reset Camera</button>
+  <button id="btn-load-new">Load Another Map</button>
+  <button id="btn-list-big" style="display:none">List BIG Files</button>
+</div>
+
+<div id="loading">
+  <div style="text-align:center">
+    <div class="spinner"></div>
+    <p>Parsing map file...</p>
+  </div>
+</div>
+
+<div id="error-toast"></div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
