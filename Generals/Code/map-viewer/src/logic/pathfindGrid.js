@@ -97,13 +97,12 @@ export class PathfindGrid {
       }
     }
 
-    // Mark obstacle cells for structures
+    // Mark obstacle cells for structures (INI-based, first pass)
     if (objectsList) {
       this.classifyObjectFootprints(objectsList, playH);
     }
 
-    // Build zones via flood fill
-    this.buildZones();
+    // Zone building is deferred -- call buildZones() after all classification passes
   }
 
   classifyCell(mapX, mapY, hm, border) {
@@ -216,7 +215,13 @@ export class PathfindGrid {
            lname.includes('gattling') || lname.includes('tower') ||
            lname.includes('hackinternet') || lname.includes('stratcenter') ||
            lname.includes('particlecannon') || lname.includes('nucmissile') ||
-           lname.includes('scudstorm');
+           lname.includes('scudstorm') ||
+           lname.includes('civbuilding') || lname.includes('house') ||
+           lname.includes('building') || lname.includes('structure') ||
+           lname.includes('hut') || lname.includes('mosque') ||
+           lname.includes('hospital') || lname.includes('prison') ||
+           lname.includes('warehouse') || lname.includes('garage') ||
+           lname.includes('church') || lname.includes('temple');
   }
 
   /**
@@ -295,6 +300,26 @@ export class PathfindGrid {
       }
     }
     return marked;
+  }
+
+  /**
+   * Second classification pass: mark obstacles for non-mobile units
+   * that the INI-based pass missed (e.g. civilian buildings without
+   * parsed KindOf data). Uses pre-computed bounding radius from the
+   * Three.js mesh, passed in as an array of {x, z, radius} entries.
+   */
+  classifyMeshFootprints(obstacles) {
+    let count = 0;
+    let cells = 0;
+
+    for (const obs of obstacles) {
+      count++;
+      cells += this._markCircularFootprint(obs.x, obs.z, obs.radius);
+    }
+
+    if (count > 0) {
+      console.log(`Pathfind mesh pass: ${count} additional obstacles, ${cells} cells marked`);
+    }
   }
 
   // --- Unit occupancy tracking (mirrors updatePos / updateGoal / removePos) ---
