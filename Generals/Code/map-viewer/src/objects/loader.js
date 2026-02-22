@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { getFileFromPool } from '../parsers/big.js';
-import { parseW3D, W3D_MESH_FLAG_HIDDEN, W3D_MESH_FLAG_PRELIT_UNLIT,
+import { parseW3D, W3D_MESH_FLAG_COLLISION_BOX, W3D_MESH_FLAG_COLLISION_TYPE_MASK,
+         W3D_MESH_FLAG_HIDDEN, W3D_MESH_FLAG_PRELIT_UNLIT,
          W3D_MESH_FLAG_GEOMETRY_TYPE_MASK, W3D_MESH_FLAG_GEOMETRY_TYPE_SKIN,
          W3D_MESH_FLAG_SKIN_LEGACY } from '../parsers/w3d.js';
 import { loadTextureFromPool, loadTextureFromPoolWithLuminanceAlpha } from '../roads/mesh.js';
@@ -206,8 +207,9 @@ export function loadW3DModel(w3dPath) {
     let meshCount = 0;
     for (const m of w3d.meshes) {
       const mname = m.name.toLowerCase();
-      if (mname.includes('shadow') || mname.includes('collision') || mname.startsWith('box')) continue;
+      if (mname.includes('shadow') || mname.includes('collision')) continue;
       if (m.attrs & W3D_MESH_FLAG_HIDDEN) continue;
+      if (m.attrs & (W3D_MESH_FLAG_COLLISION_BOX | W3D_MESH_FLAG_COLLISION_TYPE_MASK)) continue;
 
       const isSkin = m.boneLinks && m.boneLinks.length > 0 &&
         ((m.attrs & W3D_MESH_FLAG_GEOMETRY_TYPE_MASK) === W3D_MESH_FLAG_GEOMETRY_TYPE_SKIN ||
