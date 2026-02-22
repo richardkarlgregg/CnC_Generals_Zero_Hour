@@ -17,6 +17,14 @@ const state = {
   colorMode: 'terrain',
   terrainAtlas: null,
   terrainAtlasTex: null,
+
+  // RTS gameplay state
+  units: new Map(),
+  selectedUnits: [],
+  hotkeySquads: new Array(10).fill(null),
+  messageStream: null,
+  pathfinder: null,
+  gameLoop: null,
 };
 
 export default state;

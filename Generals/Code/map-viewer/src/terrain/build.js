@@ -20,6 +20,7 @@ import { w3dModelCache, w3dTextureCache } from '../objects/loader.js';
 import { w3dLookupCache } from '../objects/index.js';
 import { camState, CAM_DEFAULT_PITCH, CAM_MAX_HEIGHT } from '../engine/camera.js';
 import { ROAD_SEGMENT } from '../constants.js';
+import { initGameSystems, resetGameSystems } from '../engine/gameLoop.js';
 
 export function buildTerrain(mapData) {
   state.currentMapData = mapData;
@@ -280,6 +281,10 @@ export function buildTerrain(mapData) {
   camState.yaw = Math.PI * 0.75;
   camState.pitch = CAM_DEFAULT_PITCH;
   camState.velocity.set(0, 0, 0);
+
+  // Initialize RTS game systems (selection, orders, pathfinding, AI)
+  resetGameSystems();
+  initGameSystems();
 
   return { drawW: width, drawH: height, playW, playH, minH, maxH };
 }

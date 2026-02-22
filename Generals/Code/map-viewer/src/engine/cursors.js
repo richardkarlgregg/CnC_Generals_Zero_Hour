@@ -1,5 +1,7 @@
 import { camState } from './camera.js';
 import { CAM_EDGE_SIZE } from './camera.js';
+import { isAttackMoveMode } from './commandTranslator.js';
+import state from '../state.js';
 
 function makeSvgCursor(svg, hotX, hotY) {
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${hotX} ${hotY}, auto`;
@@ -20,6 +22,32 @@ export const generalsCursors = (() => {
     <line x1="1" y1="16" x2="11" y2="16" stroke="#33ff33" stroke-width="2" opacity="0.8"/>
     <line x1="21" y1="16" x2="31" y2="16" stroke="#33ff33" stroke-width="2" opacity="0.8"/>
     <circle cx="16" cy="16" r="1.5" fill="none" stroke="#33ff33" stroke-width="1" opacity="0.8"/>
+  </svg>`;
+
+  // Green move cursor (Generals-style pointed arrow)
+  const moveSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+    <polygon points="16,2 28,28 16,22 4,28" fill="#33ff33" stroke="#115511" stroke-width="1.5" stroke-linejoin="round" opacity="0.9"/>
+    <polygon points="16,6 24,25 16,20 8,25" fill="none" stroke="rgba(200,255,200,0.4)" stroke-width="0.5"/>
+  </svg>`;
+
+  // Red attack crosshair cursor
+  const attackSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+    <line x1="16" y1="2" x2="16" y2="12" stroke="#ff3333" stroke-width="2.5" opacity="0.9"/>
+    <line x1="16" y1="20" x2="16" y2="30" stroke="#ff3333" stroke-width="2.5" opacity="0.9"/>
+    <line x1="2" y1="16" x2="12" y2="16" stroke="#ff3333" stroke-width="2.5" opacity="0.9"/>
+    <line x1="20" y1="16" x2="30" y2="16" stroke="#ff3333" stroke-width="2.5" opacity="0.9"/>
+    <circle cx="16" cy="16" r="6" fill="none" stroke="#ff3333" stroke-width="1.5" opacity="0.7"/>
+    <circle cx="16" cy="16" r="1.5" fill="#ff3333" opacity="0.9"/>
+  </svg>`;
+
+  // Attack-move cursor (orange cross with arrow)
+  const attackMoveSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+    <line x1="16" y1="2" x2="16" y2="12" stroke="#ffaa33" stroke-width="2.5" opacity="0.9"/>
+    <line x1="16" y1="20" x2="16" y2="30" stroke="#ffaa33" stroke-width="2.5" opacity="0.9"/>
+    <line x1="2" y1="16" x2="12" y2="16" stroke="#ffaa33" stroke-width="2.5" opacity="0.9"/>
+    <line x1="20" y1="16" x2="30" y2="16" stroke="#ffaa33" stroke-width="2.5" opacity="0.9"/>
+    <circle cx="16" cy="16" r="6" fill="none" stroke="#ffaa33" stroke-width="1.5" opacity="0.7"/>
+    <polygon points="16,10 19,14 13,14" fill="#ffaa33" opacity="0.9"/>
   </svg>`;
 
   function scrollSvg(angle) {
@@ -48,6 +76,9 @@ export const generalsCursors = (() => {
   return {
     arrow: makeSvgCursor(arrowSvg, 3, 1),
     select: makeSvgCursor(selectSvg, 16, 16),
+    move: makeSvgCursor(moveSvg, 16, 16),
+    attack: makeSvgCursor(attackSvg, 16, 16),
+    attackMove: makeSvgCursor(attackMoveSvg, 16, 16),
     scroll: scrollCursors,
   };
 })();
@@ -70,7 +101,7 @@ export function updateCursor(canvas) {
     }
     return;
   }
-  if (camState.isDragSelecting) {
+  if (camState.isDragSelecting && camState.wasDragSelecting) {
     name = 'select';
   } else {
     let edgeDir = -1;
@@ -95,10 +126,27 @@ export function updateCursor(canvas) {
       }
       return;
     }
-    name = 'arrow';
+
+    // Context-sensitive cursor when units are selected
+    if (state.selectedUnits && state.selectedUnits.length > 0) {
+      if (isAttackMoveMode()) {
+        name = 'attackMove';
+      } else {
+        name = 'move';
+      }
+    } else {
+      name = 'arrow';
+    }
   }
   if (name !== currentCursorName) {
-    canvas.style.cursor = name === 'select' ? generalsCursors.select : generalsCursors.arrow;
+    const cursorMap = {
+      select: generalsCursors.select,
+      move: generalsCursors.move,
+      attack: generalsCursors.attack,
+      attackMove: generalsCursors.attackMove,
+      arrow: generalsCursors.arrow,
+    };
+    canvas.style.cursor = cursorMap[name] || generalsCursors.arrow;
     currentCursorName = name;
   }
 }

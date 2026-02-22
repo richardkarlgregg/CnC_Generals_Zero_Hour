@@ -30,3 +30,17 @@ export const TILE_SIZE = 64;
 
 export const MAX_TERRAIN_LIGHTS = 3;
 export const SUN_DISTANCE = 10000;
+
+// Pathfinding constants -- mirrors AIPathfind.h
+export const PATHFIND_CELL_SIZE = 10;
+export const COST_ORTHOGONAL = 10;
+export const COST_DIAGONAL = 14;
+export const PATHFIND_CELLS_PER_FRAME = 2000;
+export const MAX_WAYPOINTS = 16;
+export const DRAG_TOLERANCE = 4;
+
+// Locomotor defaults
+export const DEFAULT_MOVE_SPEED = 30;
+export const DEFAULT_TURN_RATE = 180;
+export const DEFAULT_ACCELERATION = 60;
+export const DEFAULT_BRAKING = 90;

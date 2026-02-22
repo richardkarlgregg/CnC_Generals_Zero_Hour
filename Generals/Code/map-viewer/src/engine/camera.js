@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import state from '../state.js';
 import { updateCursor } from './cursors.js';
 import { showSelectionRect } from './selection.js';
+import { handleLeftMouseUp, handleControlGroup } from './selectionTranslator.js';
+import { handleRightClick, handleOrderHotkey } from './commandTranslator.js';
+import { DRAG_TOLERANCE } from '../constants.js';
 
 export const CAM_DEFAULT_PITCH = -37 * Math.PI / 180;
 export const CAM_MIN_PITCH     = -Math.PI / 5;
@@ -33,9 +36,16 @@ export const camState = {
   keys: {},
   mousePos: { x: 0, y: 0 },
   isDragSelecting: false,
+  wasDragSelecting: false,
   dragStart: { x: 0, y: 0 },
   dragEnd: { x: 0, y: 0 },
+  dragStartX: 0,
+  dragStartY: 0,
   edgeScrollEnabled: false,
+  // RMB tracking for distinguishing click from drag
+  rightDown: false,
+  rightAnchor: { x: 0, y: 0 },
+  rightWasDrag: false,
 };
 
 export let selectionOverlay = null;
@@ -45,8 +55,12 @@ export function initGeneralsCamera(domElement) {
 
   domElement.addEventListener('mousedown', e => {
     if (e.button === 2) {
+      // RMB: track both pan and potential click
       camState.isPanning = true;
       camState.panAnchor = { x: e.clientX, y: e.clientY };
+      camState.rightDown = true;
+      camState.rightAnchor = { x: e.clientX, y: e.clientY };
+      camState.rightWasDrag = false;
     } else if (e.button === 1) {
       e.preventDefault();
       camState.middleDown = true;
@@ -55,9 +69,13 @@ export function initGeneralsCamera(domElement) {
       camState.rotAnchorYaw = camState.yaw;
       camState.rotAnchorPitch = camState.pitch;
     } else if (e.button === 0) {
+      // LMB: start potential drag selection
       camState.isDragSelecting = true;
+      camState.wasDragSelecting = false;
       camState.dragStart = { x: e.clientX, y: e.clientY };
       camState.dragEnd = { x: e.clientX, y: e.clientY };
+      camState.dragStartX = e.clientX;
+      camState.dragStartY = e.clientY;
       showSelectionRect(false);
     }
   });
@@ -72,6 +90,15 @@ export function initGeneralsCamera(domElement) {
       const sinY = Math.sin(camState.yaw), cosY = Math.cos(camState.yaw);
       camState.target.x -= (dx * cosY + dy * sinY) * panScale;
       camState.target.z -= (-dx * sinY + dy * cosY) * panScale;
+
+      // Track if RMB moved enough to be a drag (pan), not a click
+      if (camState.rightDown) {
+        const rdx = Math.abs(e.clientX - camState.rightAnchor.x);
+        const rdy = Math.abs(e.clientY - camState.rightAnchor.y);
+        if (rdx > DRAG_TOLERANCE || rdy > DRAG_TOLERANCE) {
+          camState.rightWasDrag = true;
+        }
+      }
     }
     if (camState.isRotating) {
       const dx = e.clientX - camState.rotAnchor.x;
@@ -81,12 +108,22 @@ export function initGeneralsCamera(domElement) {
       camState.dragEnd = { x: e.clientX, y: e.clientY };
       const dx = Math.abs(camState.dragEnd.x - camState.dragStart.x);
       const dy = Math.abs(camState.dragEnd.y - camState.dragStart.y);
-      if (dx > 4 || dy > 4) showSelectionRect(true);
+      if (dx > DRAG_TOLERANCE || dy > DRAG_TOLERANCE) {
+        camState.wasDragSelecting = true;
+        showSelectionRect(true);
+      }
     }
   });
 
   window.addEventListener('mouseup', e => {
-    if (e.button === 2) camState.isPanning = false;
+    if (e.button === 2) {
+      camState.isPanning = false;
+      // If RMB was a click (not drag): issue order
+      if (camState.rightDown && !camState.rightWasDrag) {
+        handleRightClick(e.clientX, e.clientY, e.shiftKey);
+      }
+      camState.rightDown = false;
+    }
     if (e.button === 1) {
       camState.middleReleaseTime = performance.now();
       camState.middleDown = false;
@@ -101,8 +138,11 @@ export function initGeneralsCamera(domElement) {
       }
     }
     if (e.button === 0) {
+      // LMB release: route through selection translator
+      const wasActualDrag = camState.wasDragSelecting;
       camState.isDragSelecting = false;
       showSelectionRect(false);
+      handleLeftMouseUp(e.clientX, e.clientY, e.shiftKey);
     }
   });
 
@@ -119,6 +159,19 @@ export function initGeneralsCamera(domElement) {
   window.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     camState.keys[e.code] = true;
+
+    // Control groups: Ctrl+0-9 to assign, 0-9 to recall
+    const digitMatch = e.code.match(/^Digit(\d)$/);
+    if (digitMatch) {
+      const idx = parseInt(digitMatch[1]);
+      handleControlGroup(idx, e.ctrlKey, e.shiftKey);
+      return;
+    }
+
+    // Order hotkeys
+    if (!e.ctrlKey && !e.altKey) {
+      handleOrderHotkey(e.code);
+    }
   });
   window.addEventListener('keyup', e => { camState.keys[e.code] = false; });
 
@@ -173,6 +226,6 @@ export function updateGeneralsCamera() {
   if (camState.isDragSelecting) {
     const dx = Math.abs(camState.dragEnd.x - camState.dragStart.x);
     const dy = Math.abs(camState.dragEnd.y - camState.dragStart.y);
-    if (dx > 4 || dy > 4) showSelectionRect(true);
+    if (dx > DRAG_TOLERANCE || dy > DRAG_TOLERANCE) showSelectionRect(true);
   }
 }

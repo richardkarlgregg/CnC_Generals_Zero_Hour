@@ -21,6 +21,19 @@ export function getTerrainHeightAt(worldX, worldY) {
   return (h00 * (1 - fx) * (1 - fy) + h10 * fx * (1 - fy) + h01 * (1 - fx) * fy + h11 * fx * fy) * MAP_HEIGHT_SCALE;
 }
 
+/**
+ * Get terrain height using Three.js world coordinates (x, z).
+ * Converts from Three.js Z back to map Y coordinate space.
+ */
+export function getTerrainHeightAtWorld(threeX, threeZ) {
+  if (!state.currentMapData || !state.currentMapData.heightMap) return 0;
+  const hm = state.currentMapData.heightMap;
+  const b = hm.borderSize;
+  const playH = hm.height - 2 * b;
+  const mapY = (playH - 1) * MAP_XY_FACTOR - threeZ;
+  return getTerrainHeightAt(threeX, mapY);
+}
+
 const INVERTED_MASK = 0x1;
 const FLIPPED_MASK = 0x2;
 

@@ -7,9 +7,13 @@ import { loadW3DModel } from './loader.js';
 import { objectKindOfMap } from '../parsers/ini.js';
 import { getTerrainHeightAt } from '../terrain/update.js';
 import { updateLightMeshVisibility } from '../engine/lighting.js';
+import { Unit, resetUnitIdCounter } from '../engine/unit.js';
 
 export function buildObjectMarkers(objects, fullW, fullH, border) {
   if (!objects || objects.length === 0) return;
+
+  state.units.clear();
+  resetUnitIdCounter();
 
   const hasW3D = w3dFileIndex.size > 0;
 
@@ -50,6 +54,10 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
           const kindOf = objectKindOfMap.get(obj.name.toLowerCase());
           model.userData = { name: obj.name, w3d: w3dPath, kindOf: kindOf || null };
           state.objectMarkers.add(model);
+
+          const unit = new Unit(model, obj.name, kindOf);
+          state.units.set(unit.id, unit);
+
           loadedCount++;
           placed = true;
         }
@@ -76,6 +84,10 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
       const kindOf = objectKindOfMap.get(obj.name.toLowerCase());
       marker.userData = { name: obj.name, kindOf: kindOf || null };
       state.objectMarkers.add(marker);
+
+      const unit = new Unit(marker, obj.name, kindOf);
+      state.units.set(unit.id, unit);
+
       fallbackCount++;
     }
   }

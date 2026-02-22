@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import state from '../state.js';
 import { initGeneralsCamera, updateGeneralsCamera } from './camera.js';
+import { updateGameSystems } from './gameLoop.js';
+
+let lastTime = 0;
 
 export function initThree() {
   const canvas = document.getElementById('canvas');
@@ -26,11 +29,18 @@ export function initThree() {
     state.renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
+  lastTime = performance.now();
   animate();
 }
 
 function animate() {
   requestAnimationFrame(animate);
+
+  const now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.1);
+  lastTime = now;
+
   updateGeneralsCamera();
+  updateGameSystems(dt);
   state.renderer.render(state.scene, state.camera);
 }
