@@ -6,14 +6,19 @@ export const objectKindOfMap = new Map();
 export const objectGeometryMap = new Map();
 export const roadTypeMap = new Map();
 
+/**
+ * Mirrors Generals' INI loading: ALL .ini files are loaded before the map.
+ * In Generals, INI::load() runs on every .ini file in the data directory,
+ * populating ThingFactory with ThingTemplates (KindOf + GeometryInfo + Draw model).
+ * We scan every .ini file in the BIG archives to match this behavior.
+ */
 export function parseObjectINIsFromPool() {
   objectModelMap.clear();
   objectKindOfMap.clear();
   objectGeometryMap.clear();
   const candidates = [];
   for (const [path] of bigFilePool) {
-    if ((path.startsWith('data/ini/') && path.endsWith('.ini')) ||
-        (path.includes('object') && path.endsWith('.ini'))) {
+    if (path.endsWith('.ini')) {
       candidates.push(path);
     }
   }

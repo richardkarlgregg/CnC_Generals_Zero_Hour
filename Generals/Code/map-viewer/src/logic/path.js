@@ -114,32 +114,78 @@ export class Path {
 }
 
 /**
- * Mirrors Pathfinder::isLinePassable + linePassableCallback + checkForMovement.
- * Bresenham line walk, checking a radius-sized block of cells at each step.
- * This ensures the optimized path doesn't clip building corners or narrow gaps.
+ * Mirrors Pathfinder::iterateCellsAlongLine + linePassableCallback
+ * (AIPathfind.cpp:8489-8586, 8957-8996).
+ *
+ * Generals' version checks intermediate cells during diagonal steps,
+ * visiting MORE cells than standard Bresenham. This prevents the LOS
+ * optimization from cutting through obstacle corners.
+ *
+ * At each cell: checks validMovementPosition (single cell type) AND
+ * checkMovementBlock (radius block for unit occupancy).
  */
 function isLinePassableWithRadius(grid, from, to, pathRadius, centerInCell, requestingUnitId = 0) {
   const cellFrom = grid.worldToCell(from.x, from.z);
   const cellTo = grid.worldToCell(to.x, to.z);
 
-  let x0 = cellFrom.x, y0 = cellFrom.y;
-  const x1 = cellTo.x, y1 = cellTo.y;
+  return iterateCellsAlongLine(grid, cellFrom.x, cellFrom.y, cellTo.x, cellTo.y,
+    requestingUnitId, pathRadius, centerInCell);
+}
 
-  const dx = Math.abs(x1 - x0);
-  const dy = Math.abs(y1 - y0);
-  const sx = x0 < x1 ? 1 : -1;
-  const sy = y0 < y1 ? 1 : -1;
-  let err = dx - dy;
+/**
+ * Mirrors Generals' iterateCellsAlongLine (AIPathfind.cpp:8506-8586).
+ * Uses Bresenham with intermediate cell checks on diagonal steps.
+ */
+function iterateCellsAlongLine(grid, startX, startY, endX, endY, requestingUnitId, pathRadius, centerInCell) {
+  const delta_x = Math.abs(endX - startX);
+  const delta_y = Math.abs(endY - startY);
+  let x = startX;
+  let y = startY;
 
-  while (true) {
-    // Mirrors linePassableCallback -> checkForMovement + validMovementPosition
-    if (!grid.checkMovementBlock(x0, y0, requestingUnitId, pathRadius, centerInCell)) return false;
+  let xinc1, xinc2, yinc1, yinc2;
+  xinc1 = xinc2 = endX >= startX ? 1 : -1;
+  yinc1 = yinc2 = endY >= startY ? 1 : -1;
 
-    if (x0 === x1 && y0 === y1) break;
-
-    const e2 = 2 * err;
-    if (e2 > -dy) { err -= dy; x0 += sx; }
-    if (e2 < dx)  { err += dx; y0 += sy; }
+  let den, num, numadd, numpixels;
+  if (delta_x >= delta_y) {
+    xinc1 = 0;
+    yinc2 = 0;
+    den = delta_x;
+    num = delta_x >> 1;
+    numadd = delta_y;
+    numpixels = delta_x;
+  } else {
+    xinc2 = 0;
+    yinc1 = 0;
+    den = delta_y;
+    num = delta_y >> 1;
+    numadd = delta_x;
+    numpixels = delta_y;
   }
+
+  for (let curpixel = 0; curpixel <= numpixels; curpixel++) {
+    if (!cellPassableForLine(grid, x, y, requestingUnitId, pathRadius, centerInCell)) return false;
+
+    num += numadd;
+    if (num >= den) {
+      num -= den;
+      x += xinc1;
+      y += yinc1;
+      // Intermediate diagonal cell check (matches Generals)
+      if (!cellPassableForLine(grid, x, y, requestingUnitId, pathRadius, centerInCell)) return false;
+    }
+    x += xinc2;
+    y += yinc2;
+  }
+  return true;
+}
+
+/**
+ * Mirrors linePassableCallback: checks both cell type (validMovementPosition)
+ * and unit block (checkMovementBlock) for a cell along a LOS line.
+ */
+function cellPassableForLine(grid, x, y, requestingUnitId, pathRadius, centerInCell) {
+  if (!grid.validMovementPosition(x, y)) return false;
+  if (!grid.checkMovementBlock(x, y, requestingUnitId, pathRadius, centerInCell)) return false;
   return true;
 }

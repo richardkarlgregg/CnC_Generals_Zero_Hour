@@ -185,8 +185,12 @@ export class Pathfinder {
   }
 
   /**
-   * A* pathfinding. Now uses radius-based block check matching
-   * Generals' checkForMovement (checks a square block of cells per step).
+   * A* pathfinding. Mirrors examineNeighboringCells (AIPathfind.cpp:5610-5855).
+   *
+   * Generals uses two separate checks per neighbor:
+   *   1. validMovementPosition (single cell: terrain/obstacle type)
+   *   2. checkForMovement (radius block: unit occupancy)
+   * Diagonals require at least one adjacent orthogonal to be open (neighborFlags).
    */
   internalFindPath(startCell, goalCell, fromWorld, toWorld, requestingUnitId = 0, pathRadius = 0, centerInCell = false) {
     const grid = this.grid;
@@ -230,27 +234,38 @@ export class Pathfinder {
         return this.buildActualPath(getCellInfo, startCell, goalCell, fromWorld, toWorld, pathRadius, centerInCell, requestingUnitId);
       }
 
+      // Track which orthogonal neighbors are passable (mirrors neighborFlags[8])
+      // Used to gate diagonal moves (Generals: AIPathfind.cpp:5637-5647)
+      const neighborOpen = [false, false, false, false, false, false, false, false];
+
       for (let i = 0; i < 8; i++) {
         const nx = cx + DELTA[i].dx;
         const ny = cy + DELTA[i].dy;
 
         if (nx < 0 || nx >= grid.width || ny < 0 || ny >= grid.height) continue;
 
-        // Mirrors checkForMovement: check a radius-sized block of cells
+        // Step 1: validMovementPosition on the destination cell (single cell type check)
+        if (!grid.validMovementPosition(nx, ny)) continue;
+
+        // Step 2: checkMovementBlock for the radius block (obstacle + unit occupancy)
         if (!grid.checkMovementBlock(nx, ny, requestingUnitId, pathRadius, centerInCell)) continue;
 
-        // Diagonal: both adjacent cells must also be passable for the block
+        // Diagonal gating: at least one adjacent orthogonal must be open
+        // Mirrors: if (!neighborFlags[adjacent[i-4]] && !neighborFlags[adjacent[i-3]]) continue;
+        // adjacent[] = {0, 1, 2, 3, 0}
         if (i >= 4) {
-          if (!grid.checkMovementBlock(cx + DELTA[i].dx, cy, requestingUnitId, pathRadius, centerInCell) ||
-              !grid.checkMovementBlock(cx, cy + DELTA[i].dy, requestingUnitId, pathRadius, centerInCell)) continue;
+          const adj1 = (i - 4);       // e.g. i=4(NE): adj1=0(E)
+          const adj2 = (i - 4 + 1);   // e.g. i=4(NE): adj2=1(N)
+          if (!neighborOpen[adj1] && !neighborOpen[adj2 % 4]) continue;
         }
+
+        neighborOpen[i] = true;
 
         const neighborInfo = getCellInfo(nx, ny);
         if (neighborInfo.onClosed) continue;
 
         let moveCost = DELTA[i].cost;
 
-        // Soft penalty for cells with moving units
         const nIdx = ny * grid.width + nx;
         if (grid.unitPresence[nIdx] !== 0 && grid.unitPos[nIdx] !== requestingUnitId) {
           moveCost += COST_ORTHOGONAL * 3;
@@ -314,7 +329,15 @@ export class Pathfinder {
       path.tail.pos.y = getTerrainHeightAtSafe(toWorld.x, toWorld.z);
     }
 
+    const preOptNodes = path.nodeCount;
     path.optimize(grid, pathRadius, centerInCell, requestingUnitId);
+
+    let optNodes = 0;
+    let n = path.head;
+    while (n) { optNodes++; n = n.nextOptimized || null; if (!n) break; }
+
+    console.log(`Path: ${preOptNodes} raw → ${optNodes} optimized nodes (radius=${pathRadius}, center=${centerInCell})`);
+
     return path;
   }
 
@@ -337,34 +360,59 @@ export class Pathfinder {
 
   /**
    * Mirrors Pathfinder::isLinePassable (AIPathfind.cpp:9025-9041).
-   * For each cell along the Bresenham line, checks a radius-sized block
-   * using checkMovementBlock (matching linePassableCallback -> checkForMovement).
+   * Uses Generals' iterateCellsAlongLine which checks intermediate cells
+   * during diagonal steps to prevent corner-cutting.
    */
   isLinePassable(grid, from, to, pathRadius, centerInCell, requestingUnitId = 0) {
     const cellFrom = grid.worldToCell(from.x, from.z);
     const cellTo = grid.worldToCell(to.x, to.z);
+    return this._iterateCellsAlongLine(grid, cellFrom.x, cellFrom.y,
+      cellTo.x, cellTo.y, requestingUnitId, pathRadius, centerInCell);
+  }
 
-    let x0 = cellFrom.x, y0 = cellFrom.y;
-    const x1 = cellTo.x, y1 = cellTo.y;
+  /**
+   * Mirrors Generals' iterateCellsAlongLine (AIPathfind.cpp:8506-8586).
+   */
+  _iterateCellsAlongLine(grid, startX, startY, endX, endY, requestingUnitId, pathRadius, centerInCell) {
+    const delta_x = Math.abs(endX - startX);
+    const delta_y = Math.abs(endY - startY);
+    let x = startX, y = startY;
 
-    const dx = Math.abs(x1 - x0);
-    const dy = Math.abs(y1 - y0);
-    const sx = x0 < x1 ? 1 : -1;
-    const sy = y0 < y1 ? 1 : -1;
-    let err = dx - dy;
+    let xinc1, xinc2, yinc1, yinc2;
+    xinc1 = xinc2 = endX >= startX ? 1 : -1;
+    yinc1 = yinc2 = endY >= startY ? 1 : -1;
 
-    while (true) {
-      // At each cell along the line, check the full radius block
-      // (mirrors linePassableCallback calling checkForMovement with radius)
-      if (!grid.checkMovementBlock(x0, y0, requestingUnitId, pathRadius, centerInCell)) {
-        return false;
+    let den, num, numadd, numpixels;
+    if (delta_x >= delta_y) {
+      xinc1 = 0;
+      yinc2 = 0;
+      den = delta_x;
+      num = delta_x >> 1;
+      numadd = delta_y;
+      numpixels = delta_x;
+    } else {
+      xinc2 = 0;
+      yinc1 = 0;
+      den = delta_y;
+      num = delta_y >> 1;
+      numadd = delta_x;
+      numpixels = delta_y;
+    }
+
+    for (let curpixel = 0; curpixel <= numpixels; curpixel++) {
+      if (!grid.validMovementPosition(x, y)) return false;
+      if (!grid.checkMovementBlock(x, y, requestingUnitId, pathRadius, centerInCell)) return false;
+
+      num += numadd;
+      if (num >= den) {
+        num -= den;
+        x += xinc1;
+        y += yinc1;
+        if (!grid.validMovementPosition(x, y)) return false;
+        if (!grid.checkMovementBlock(x, y, requestingUnitId, pathRadius, centerInCell)) return false;
       }
-
-      if (x0 === x1 && y0 === y1) break;
-
-      const e2 = 2 * err;
-      if (e2 > -dy) { err -= dy; x0 += sx; }
-      if (e2 < dx)  { err += dx; y0 += sy; }
+      x += xinc2;
+      y += yinc2;
     }
     return true;
   }

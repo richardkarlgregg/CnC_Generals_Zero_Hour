@@ -97,12 +97,13 @@ export class PathfindGrid {
       }
     }
 
-    // Mark obstacle cells for structures (INI-based, first pass)
+    // Mark obstacle cells for structures (mirrors classifyObjectFootprint loop at map load)
     if (objectsList) {
       this.classifyObjectFootprints(objectsList, playH);
     }
 
-    // Zone building is deferred -- call buildZones() after all classification passes
+    // Build zones via flood fill
+    this.buildZones();
   }
 
   classifyCell(mapX, mapY, hm, border) {
@@ -144,28 +145,47 @@ export class PathfindGrid {
    *   BOX: rotated rectangle using majorRadius/minorRadius, sampled at STEP_SIZE = CELL/2
    *   SPHERE/CYLINDER: circular, size = (majorRadius / CELL_SIZE) + 0.4
    */
+  /**
+   * Mirrors the map-load loop in AIPathfind.cpp:4103-4112:
+   *   for (obj = getFirstObject(); obj; obj = obj->getNextObject())
+   *     classifyObjectFootprint(obj, true);
+   *
+   * Each object's classifyObjectFootprint (lines 3660-3734) filters:
+   *   - Skip KINDOF_MINE, KINDOF_PROJECTILE, KINDOF_BRIDGE_TOWER
+   *   - Must be KINDOF_STRUCTURE
+   *   - Must not be mobile
+   *   - GeometryIsSmall must be false
+   * Then internal_classifyObjectFootprint marks cells from GeometryInfo.
+   *
+   * Objects without a ThingTemplate (no KindOf data) are logged as warnings
+   * -- in Generals these would not be placed on the map at all.
+   */
   classifyObjectFootprints(objects, playH) {
     let obstacleCount = 0;
     let obstacleCells = 0;
+    const missingTemplate = new Map();
 
     for (const obj of objects) {
       const lname = obj.name.toLowerCase();
       const kindOf = objectKindOfMap.get(lname);
       const geomInfo = objectGeometryMap.get(lname);
 
-      // --- Generals filter: classifyObjectFootprint lines 3663-3735 ---
-      if (kindOf) {
-        if (kindOf.has('MINE') || kindOf.has('PROJECTILE') || kindOf.has('BRIDGE_TOWER')) continue;
-        if (!kindOf.has('STRUCTURE')) continue;
-      } else {
-        // No KindOf data: fall back to name heuristic for common structures
-        if (!this._looksLikeStructure(lname)) continue;
+      if (!kindOf) {
+        // In Generals, objects without a ThingTemplate are not placed (GameLogic.cpp:1620-1632).
+        // Log as warning so user knows which objects lack INI data.
+        missingTemplate.set(obj.name, (missingTemplate.get(obj.name) || 0) + 1);
+        continue;
       }
+
+      // --- Generals filter: classifyObjectFootprint lines 3663-3735 ---
+      if (kindOf.has('MINE') || kindOf.has('PROJECTILE') || kindOf.has('BRIDGE_TOWER')) continue;
+      if (!kindOf.has('STRUCTURE')) continue;
 
       // Skip small geometry (Generals: getGeometryInfo().getIsSmall())
       if (geomInfo && geomInfo.isSmall) continue;
 
-      // Determine footprint geometry
+      // Determine footprint from GeometryInfo (parsed from INI).
+      // Default in Generals: GEOMETRY_SPHERE, majorRadius=1, isSmall=false
       let geomType = 'CYLINDER';
       let majorRadius = DEFAULT_GEOM_RADIUS;
       let minorRadius = DEFAULT_GEOM_RADIUS;
@@ -174,8 +194,7 @@ export class PathfindGrid {
         geomType = geomInfo.type;
         majorRadius = geomInfo.majorRadius || DEFAULT_GEOM_RADIUS;
         minorRadius = geomInfo.minorRadius || majorRadius;
-      } else if (kindOf) {
-        // Approximate based on KindOf flags
+      } else {
         if (kindOf.has('HUGE') || kindOf.has('TECH_BUILDING') || kindOf.has('SUPPLY_SOURCE')) {
           majorRadius = LARGE_GEOM_RADIUS;
           minorRadius = LARGE_GEOM_RADIUS;
@@ -185,43 +204,31 @@ export class PathfindGrid {
         }
       }
 
-      // World position (same coordinate transform as buildObjectMarkers)
       const threeX = obj.x;
       const threeZ = (playH - 1) * MAP_XY_FACTOR - obj.y;
 
       obstacleCount++;
+      const cellCenter = this.worldToCell(threeX, threeZ);
 
+      let markedCells;
       if (geomType === 'BOX') {
-        obstacleCells += this._markBoxFootprint(threeX, threeZ, majorRadius, minorRadius, obj.angle || 0);
+        markedCells = this._markBoxFootprint(threeX, threeZ, majorRadius, minorRadius, obj.angle || 0);
       } else {
-        obstacleCells += this._markCircularFootprint(threeX, threeZ, majorRadius);
+        markedCells = this._markCircularFootprint(threeX, threeZ, majorRadius);
       }
+      obstacleCells += markedCells;
+      console.log(`  Obstacle: ${obj.name} at world(${threeX.toFixed(1)}, ${threeZ.toFixed(1)}) cell(${cellCenter.x}, ${cellCenter.y}) geom=${geomType} r=${majorRadius.toFixed(1)} → ${markedCells} cells`);
     }
 
     console.log(`Pathfind obstacles: ${obstacleCount} objects, ${obstacleCells} cells marked`);
-  }
 
-  /**
-   * Name-based fallback for detecting structures when no KindOf data is available.
-   * Kept deliberately narrow to avoid false positives on mobile units.
-   */
-  _looksLikeStructure(lname) {
-    return lname.includes('commandcenter') || lname.includes('barracks') ||
-           lname.includes('warfactory') || lname.includes('airfield') ||
-           lname.includes('supplyc') || lname.includes('supplystash') ||
-           lname.includes('palace') || lname.includes('bunker') ||
-           lname.includes('tunnel') || lname.includes('techbuilding') ||
-           lname.includes('stinger') || lname.includes('patriot') ||
-           lname.includes('gattling') || lname.includes('tower') ||
-           lname.includes('hackinternet') || lname.includes('stratcenter') ||
-           lname.includes('particlecannon') || lname.includes('nucmissile') ||
-           lname.includes('scudstorm') ||
-           lname.includes('civbuilding') || lname.includes('house') ||
-           lname.includes('building') || lname.includes('structure') ||
-           lname.includes('hut') || lname.includes('mosque') ||
-           lname.includes('hospital') || lname.includes('prison') ||
-           lname.includes('warehouse') || lname.includes('garage') ||
-           lname.includes('church') || lname.includes('temple');
+    if (missingTemplate.size > 0) {
+      console.groupCollapsed(`Pathfind: ${missingTemplate.size} object types have no INI template (need game data BIG files)`);
+      for (const [name, count] of [...missingTemplate].sort((a, b) => b[1] - a[1])) {
+        console.log(`  ${name} (x${count})`);
+      }
+      console.groupEnd();
+    }
   }
 
   /**
@@ -300,26 +307,6 @@ export class PathfindGrid {
       }
     }
     return marked;
-  }
-
-  /**
-   * Second classification pass: mark obstacles for non-mobile units
-   * that the INI-based pass missed (e.g. civilian buildings without
-   * parsed KindOf data). Uses pre-computed bounding radius from the
-   * Three.js mesh, passed in as an array of {x, z, radius} entries.
-   */
-  classifyMeshFootprints(obstacles) {
-    let count = 0;
-    let cells = 0;
-
-    for (const obs of obstacles) {
-      count++;
-      cells += this._markCircularFootprint(obs.x, obs.z, obs.radius);
-    }
-
-    if (count > 0) {
-      console.log(`Pathfind mesh pass: ${count} additional obstacles, ${cells} cells marked`);
-    }
   }
 
   // --- Unit occupancy tracking (mirrors updatePos / updateGoal / removePos) ---
@@ -447,6 +434,18 @@ export class PathfindGrid {
   }
 
   /**
+   * Mirrors validMovementPosition (AIPathfind.cpp:4366-4430).
+   * Checks ONLY the single center cell's type (obstacle/terrain).
+   * Generals uses this for the destination cell in A* and LOS checks.
+   * checkForMovement (unit occupancy) is separate.
+   */
+  validMovementPosition(cellX, cellY) {
+    if (cellX < 0 || cellX >= this.width || cellY < 0 || cellY >= this.height) return false;
+    const cellType = this.cells[cellY * this.width + cellX];
+    return cellType === CellType.CELL_CLEAR || cellType === CellType.CELL_RUBBLE;
+  }
+
+  /**
    * Single-cell passability check (for basic terrain queries).
    * Mirrors checkForMovement with radius=0.
    */
@@ -526,5 +525,50 @@ export class PathfindGrid {
       x: cellX * PATHFIND_CELL_SIZE + PATHFIND_CELL_SIZE / 2,
       z: cellY * PATHFIND_CELL_SIZE + PATHFIND_CELL_SIZE / 2,
     };
+  }
+
+  /**
+   * Debug: build a Three.js Group showing obstacle cells as red planes
+   * and zone boundaries. Toggle with 'G' key.
+   */
+  buildDebugOverlay(THREE, getTerrainHeight) {
+    const group = new THREE.Group();
+    group.name = 'pathfindDebugOverlay';
+
+    const obstacleMat = new THREE.MeshBasicMaterial({
+      color: 0xff0000, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false
+    });
+    const cliffMat = new THREE.MeshBasicMaterial({
+      color: 0xff8800, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false
+    });
+    const impassMat = new THREE.MeshBasicMaterial({
+      color: 0x880088, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false
+    });
+
+    const cellGeo = new THREE.PlaneGeometry(PATHFIND_CELL_SIZE * 0.9, PATHFIND_CELL_SIZE * 0.9);
+    cellGeo.rotateX(-Math.PI / 2);
+
+    for (let cy = 0; cy < this.height; cy++) {
+      for (let cx = 0; cx < this.width; cx++) {
+        const cellType = this.cells[cy * this.width + cx];
+        let mat = null;
+        if (cellType === CellType.CELL_OBSTACLE) mat = obstacleMat;
+        else if (cellType === CellType.CELL_CLIFF) mat = cliffMat;
+        else if (cellType === CellType.CELL_IMPASSABLE) mat = impassMat;
+        if (!mat) continue;
+
+        const wx = cx * PATHFIND_CELL_SIZE + PATHFIND_CELL_SIZE / 2;
+        const wz = cy * PATHFIND_CELL_SIZE + PATHFIND_CELL_SIZE / 2;
+        let wy = 0;
+        try { wy = getTerrainHeight(wx, wz) + 0.5; } catch { wy = 0.5; }
+
+        const mesh = new THREE.Mesh(cellGeo, mat);
+        mesh.position.set(wx, wy, wz);
+        group.add(mesh);
+      }
+    }
+
+    console.log(`Debug overlay: ${group.children.length} cells visualized`);
+    return group;
   }
 }

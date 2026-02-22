@@ -4,6 +4,7 @@ import { updateCursor } from './cursors.js';
 import { showSelectionRect } from './selection.js';
 import { handleLeftMouseUp, handleControlGroup } from './selectionTranslator.js';
 import { handleRightClick, handleOrderHotkey } from './commandTranslator.js';
+import { togglePathfindDebugOverlay } from './gameLoop.js';
 import { DRAG_TOLERANCE } from '../constants.js';
 
 export const CAM_DEFAULT_PITCH = -37 * Math.PI / 180;
@@ -171,6 +172,11 @@ export function initGeneralsCamera(domElement) {
     // Order hotkeys
     if (!e.ctrlKey && !e.altKey) {
       handleOrderHotkey(e.code);
+    }
+
+    // Debug: 'G' toggles pathfinding grid overlay
+    if (e.code === 'KeyG' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      togglePathfindDebugOverlay();
     }
   });
   window.addEventListener('keyup', e => { camState.keys[e.code] = false; });

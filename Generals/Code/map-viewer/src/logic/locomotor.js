@@ -176,16 +176,21 @@ export class Locomotor {
 
       // Check grid collision (obstacle cells) before applying movement
       if (this.checkGridCollision(newX, newZ)) {
-        // Try sliding along one axis (matches how Generals objects slide along walls)
         const slideX = !this.checkGridCollision(newX, pos.z);
         const slideZ = !this.checkGridCollision(pos.x, newZ);
 
-        if (slideX && !slideZ) {
+        if (slideX && slideZ) {
+          // Both axes free: pick the one with more velocity component
+          if (Math.abs(this.velocityX) >= Math.abs(this.velocityZ)) {
+            pos.x = newX;
+          } else {
+            pos.z = newZ;
+          }
+        } else if (slideX) {
           pos.x = newX;
-        } else if (slideZ && !slideX) {
+        } else if (slideZ) {
           pos.z = newZ;
         } else {
-          // Fully blocked by terrain obstacle
           this.currentSpeed *= 0.1;
           unit.ai.blockedFrames++;
           unit.ai.isBlocked = true;
