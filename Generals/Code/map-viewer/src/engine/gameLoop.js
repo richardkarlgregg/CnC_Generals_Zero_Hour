@@ -24,6 +24,7 @@ import { getTerrainHeightAtWorld } from '../terrain/update.js';
 
 let initialized = false;
 let debugOverlay = null;
+let debugOverlayWasActive = false;
 let pathLines = new THREE.Group();
 pathLines.name = 'pathDebugLines';
 
@@ -54,6 +55,11 @@ export function initGameSystems() {
 
   initialized = true;
   console.log(`Game systems initialized: ${state.units.size} units (${countMobile()} mobile)`);
+
+  if (debugOverlayWasActive) {
+    debugOverlayWasActive = false;
+    togglePathfindDebugOverlay();
+  }
 }
 
 function countMobile() {
@@ -114,6 +120,7 @@ export function resetGameSystems() {
   state.pathfinder = null;
   state.selectedUnits.length = 0;
   state.hotkeySquads.fill(null);
+  debugOverlayWasActive = !!debugOverlay;
   if (debugOverlay && state.scene) {
     state.scene.remove(debugOverlay);
     debugOverlay = null;

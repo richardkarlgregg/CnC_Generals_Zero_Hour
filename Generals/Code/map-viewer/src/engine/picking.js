@@ -9,8 +9,8 @@ const tmpVec3 = new THREE.Vector3();
 /**
  * Pick a single unit at a screen position via raycasting.
  * Mirrors W3DView::pickDrawable -- builds a ray from camera through screen point.
- * Prefers mobile units over structures (in Generals, clicking a unit near a building
- * selects the unit, not the building, when both are under the cursor).
+ * Only returns selectable units. Prefers mobile units over structures (in Generals,
+ * clicking a unit near a building selects the unit, not the building).
  */
 export function pickUnit(screenX, screenY) {
   const { camera, objectMarkers } = state;
@@ -32,17 +32,27 @@ export function pickUnit(screenX, screenY) {
   const intersects = raycaster.intersectObjects(meshes, false);
 
   let firstMobile = null;
-  let firstAny = null;
+  let firstSelectable = null;
+
+  if (intersects.length > 0) {
+    const debugFirst = intersects[0];
+    const debugUnit = findUnitForObject(debugFirst.object);
+    if (debugUnit) {
+      console.log(`Pick hit: ${debugUnit.name} id=${debugUnit.id} kindOf=[${[...debugUnit.kindOf].join(' ')}] selectable=${debugUnit.isSelectable()} mobile=${debugUnit.isMobile()}`);
+    } else {
+      console.log(`Pick hit mesh but no unit found. userData:`, debugFirst.object.userData, `parent:`, debugFirst.object.parent?.userData);
+    }
+  }
 
   for (const hit of intersects) {
     const unit = findUnitForObject(hit.object);
-    if (!unit) continue;
-    if (!firstAny) firstAny = unit;
+    if (!unit || !unit.isSelectable()) continue;
+    if (!firstSelectable) firstSelectable = unit;
     if (!firstMobile && unit.isMobile()) firstMobile = unit;
     if (firstMobile) break;
   }
 
-  return firstMobile || firstAny;
+  return firstMobile || firstSelectable;
 }
 
 /**
@@ -82,6 +92,7 @@ export function getUnitsInRegion(x1, y1, x2, y2) {
   const ch = window.innerHeight;
 
   const result = [];
+  let inRegionCount = 0;
   for (const unit of state.units.values()) {
     if (!unit.mesh.visible) continue;
     tmpVec3.set(unit.position.x, unit.position.y, unit.position.z);
@@ -92,23 +103,39 @@ export function getUnitsInRegion(x1, y1, x2, y2) {
     const sy = (-tmpVec3.y * 0.5 + 0.5) * ch;
 
     if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY) {
+      inRegionCount++;
       result.push(unit);
+    }
+  }
+  if (inRegionCount > 0) {
+    console.log(`Drag region: ${inRegionCount} units in box, passing to canSelectUnit filter`);
+    for (const u of result) {
+      console.log(`  ${u.name} id=${u.id} kindOf=[${[...u.kindOf].join(' ')}] selectable=${u.isSelectable()} mobile=${u.isMobile()}`);
     }
   }
   return result;
 }
 
 /**
- * Mirrors CanSelectDrawable from SelectionXlat.cpp.
- * Filters out non-selectable units; drag selection is more restrictive.
+ * Mirrors CanSelectDrawable from SelectionXlat.cpp (lines 123-210).
+ * Key checks from Generals:
+ *   - Must have KINDOF_SELECTABLE (via Object::isSelectable)
+ *   - FORCEATTACKABLE without SELECTABLE = not selectable
+ *   - Structures cannot be drag-selected
+ *   - Drag selection only allows locally controlled units
  */
 export function canSelectUnit(unit, isDragSelecting) {
   if (!unit) return false;
-  if (!unit.isSelectable()) return false;
+  if (!unit.isSelectable()) {
+    console.log(`canSelectUnit REJECT ${unit.name}: isSelectable=false kindOf=[${[...unit.kindOf].join(' ')}]`);
+    return false;
+  }
   if (!unit.mesh.visible) return false;
 
+  if (!unit.kindOf.has('SELECTABLE') && unit.kindOf.has('FORCEATTACKABLE')) return false;
+
   if (isDragSelecting) {
-    if (unit.isStructure()) return false;
+    if (!unit.isMassSelectable()) return false;
     if (!unit.isLocallyControlled()) return false;
   }
   return true;

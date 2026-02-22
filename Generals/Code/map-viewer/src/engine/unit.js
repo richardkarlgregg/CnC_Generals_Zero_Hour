@@ -29,19 +29,34 @@ export class Unit {
     mesh.userData.unit = this;
   }
 
+  /**
+   * Mirrors Object::isSelectable (Object.cpp:2723-2731).
+   * m_isSelectable is set from KINDOF_SELECTABLE on creation (Object.cpp:414).
+   * ALWAYS_SELECTABLE overrides all other checks.
+   */
   isSelectable() {
-    if (this.kindOf.has('UNSELECTABLE')) return false;
-    if (!this.kindOf.has('SELECTABLE') && this.kindOf.size > 0) {
-      // In Generals, most game objects have SELECTABLE in their KindOf
-      // For fallback cubes without KindOf, allow selection
-    }
-    return true;
+    if (this.kindOf.has('ALWAYS_SELECTABLE')) return true;
+    if (this.kindOf.has('SELECTABLE')) return true;
+    return false;
   }
 
+  /**
+   * Whether this unit can receive movement orders.
+   * In Generals, mobile units have locomotors — VEHICLE, INFANTRY, or AIRCRAFT
+   * that are NOT STRUCTURE/IMMOBILE.
+   */
   isMobile() {
+    if (!this.isSelectable()) return false;
     if (this.kindOf.has('STRUCTURE')) return false;
     if (this.kindOf.has('IMMOBILE')) return false;
-    return true;
+    if (this.kindOf.has('VEHICLE') || this.kindOf.has('INFANTRY') ||
+        this.kindOf.has('AIRCRAFT') || this.kindOf.has('HUGE_VEHICLE')) return true;
+    return false;
+  }
+
+  /** Mirrors Object::isMassSelectable (Object.cpp:2736). */
+  isMassSelectable() {
+    return this.isSelectable() && !this.kindOf.has('STRUCTURE');
   }
 
   isLocallyControlled() {

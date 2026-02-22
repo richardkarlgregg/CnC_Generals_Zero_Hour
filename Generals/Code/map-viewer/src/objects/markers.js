@@ -40,6 +40,8 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
 
     let placed = false;
 
+    const kindOf = objectKindOfMap.get(obj.name.toLowerCase());
+
     if (hasW3D) {
       const w3dPath = findW3DForObject(obj.name);
       if (w3dPath) {
@@ -51,7 +53,6 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
           model.traverse(child => {
             if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; }
           });
-          const kindOf = objectKindOfMap.get(obj.name.toLowerCase());
           model.userData = { name: obj.name, w3d: w3dPath, kindOf: kindOf || null };
           state.objectMarkers.add(model);
 
@@ -81,7 +82,6 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
       marker.castShadow = true;
       marker.receiveShadow = true;
       marker.position.set(wx, wy + 3, wz);
-      const kindOf = objectKindOfMap.get(obj.name.toLowerCase());
       marker.userData = { name: obj.name, kindOf: kindOf || null };
       state.objectMarkers.add(marker);
 
@@ -91,6 +91,39 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
       fallbackCount++;
     }
   }
+
+  // Debug: list map objects that have NO INI data (missing KindOf)
+  const missingINI = new Map();
+  const hasINI = new Map();
+  for (const unit of state.units.values()) {
+    const lname = unit.name.toLowerCase();
+    if (unit.kindOf.size === 0) {
+      missingINI.set(unit.name, (missingINI.get(unit.name) || 0) + 1);
+    } else {
+      if (!hasINI.has(unit.name)) {
+        hasINI.set(unit.name, [...unit.kindOf].join(' '));
+      }
+    }
+  }
+
+  if (missingINI.size > 0) {
+    console.groupCollapsed(`%c⚠ ${missingINI.size} object types on map have NO INI data (not selectable)`, 'color: orange; font-weight: bold');
+    console.log('These objects need KindOf data. Drop their INI files or game Data folder.');
+    for (const [name, count] of [...missingINI].sort((a, b) => a[0].localeCompare(b[0]))) {
+      console.log(`  ${name} x${count}`);
+    }
+    console.groupEnd();
+  }
+
+  if (hasINI.size > 0) {
+    console.groupCollapsed(`✓ ${hasINI.size} object types have INI data`);
+    for (const [name, flags] of [...hasINI].sort((a, b) => a[0].localeCompare(b[0]))) {
+      console.log(`  ${name}: ${flags}`);
+    }
+    console.groupEnd();
+  }
+
+  console.log(`KindOf map has ${objectKindOfMap.size} entries total (${hasINI.size} used by map objects, ${missingINI.size} map objects missing)`);
 
   if (hasW3D) {
     console.log(`Objects: ${loadedCount} W3D models loaded, ${fallbackCount} fallback cubes`);

@@ -164,6 +164,7 @@ export class PathfindGrid {
     let obstacleCount = 0;
     let obstacleCells = 0;
     const missingTemplate = new Map();
+    this._debugFootprints = [];
 
     for (const obj of objects) {
       const lname = obj.name.toLowerCase();
@@ -209,15 +210,18 @@ export class PathfindGrid {
 
       obstacleCount++;
       const cellCenter = this.worldToCell(threeX, threeZ);
+      const usedAngle = obj.angle || 0;
 
       let markedCells;
       if (geomType === 'BOX') {
-        markedCells = this._markBoxFootprint(threeX, threeZ, majorRadius, minorRadius, obj.angle || 0);
+        markedCells = this._markBoxFootprint(threeX, threeZ, majorRadius, minorRadius, usedAngle);
+        this._debugFootprints.push({ threeX, threeZ, halfsizeX: majorRadius, halfsizeY: minorRadius, angle: usedAngle });
       } else {
         markedCells = this._markCircularFootprint(threeX, threeZ, majorRadius);
       }
       obstacleCells += markedCells;
-      console.log(`  Obstacle: ${obj.name} at world(${threeX.toFixed(1)}, ${threeZ.toFixed(1)}) cell(${cellCenter.x}, ${cellCenter.y}) geom=${geomType} r=${majorRadius.toFixed(1)} → ${markedCells} cells`);
+      const geomSrc = geomInfo ? 'INI' : 'default';
+      console.log(`  Obstacle: ${obj.name} [${geomSrc}] at world(${threeX.toFixed(1)}, ${threeZ.toFixed(1)}) cell(${cellCenter.x}, ${cellCenter.y}) geom=${geomType} major=${majorRadius.toFixed(1)} minor=${minorRadius.toFixed(1)} angle=${(usedAngle * 180 / Math.PI).toFixed(1)}° rawAngle=${usedAngle.toFixed(4)} → ${markedCells} cells`);
     }
 
     console.log(`Pathfind obstacles: ${obstacleCount} objects, ${obstacleCells} cells marked`);
@@ -232,35 +236,48 @@ export class PathfindGrid {
   }
 
   /**
-   * Mirrors internal_classifyObjectFootprint for GEOMETRY_BOX (AIPathfind.cpp:3739-3785).
-   * Samples a rotated rectangle at STEP_SIZE = CELL_SIZE * 0.5 intervals.
+   * 1:1 translation of Generals' internal_classifyObjectFootprint for GEOMETRY_BOX
+   * (AIPathfind.cpp:3740-3785).
+   *
+   * Generals works in map coords (X east, Y north).
+   * We work in Three.js coords (X east, Z south = maxMapY - mapY).
+   * The conversion only affects the Y/Z components: threeZ formulas are
+   * the Generals Y formulas with signs flipped on the trig terms.
    */
-  _markBoxFootprint(threeX, threeZ, halfX, halfY, angle) {
+  _markBoxFootprint(threeX, threeZ, halfsizeX, halfsizeY, angle) {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+
     const STEP_SIZE = PATHFIND_CELL_SIZE * 0.5;
-    const cosA = Math.cos(angle);
-    const sinA = Math.sin(angle);
-    const numStepsX = Math.ceil(2 * halfX / STEP_SIZE);
-    const numStepsY = Math.ceil(2 * halfY / STEP_SIZE);
 
-    // Top-left corner in world coordinates (rotated)
-    const tlX = threeX - halfX * cosA - halfY * sinA;
-    const tlZ = threeZ + halfY * cosA - halfX * sinA;
+    // Generals: xdx = c*STEP, xdy = s*STEP  (step along major axis in map coords)
+    // Three.js: xdx same, xdz = -s*STEP  (Y flipped to Z)
+    const xdx = c * STEP_SIZE;
+    const xdz = -s * STEP_SIZE;
 
-    const stepXX = (2 * halfX * cosA) / Math.max(numStepsX, 1);
-    const stepXZ = -(2 * halfX * sinA) / Math.max(numStepsX, 1);
-    const stepYX = (2 * halfY * sinA) / Math.max(numStepsY, 1);
-    const stepYZ = (2 * halfY * cosA) / Math.max(numStepsY, 1);
+    // Generals: ydx = s*STEP, ydy = -c*STEP  (step along minor axis in map coords)
+    // Three.js: ydx same, ydz = c*STEP  (Y flipped to Z)
+    const ydx = s * STEP_SIZE;
+    const ydz = c * STEP_SIZE;
+
+    const numStepsX = Math.ceil(2.0 * halfsizeX / STEP_SIZE);
+    const numStepsY = Math.ceil(2.0 * halfsizeY / STEP_SIZE);
+
+    // Generals: tl_x = pos.x - halfsizeX*c - halfsizeY*s
+    //           tl_y = pos.y + halfsizeY*c - halfsizeX*s
+    // Three.js: tl_x same, tl_z = threeZ + halfsizeX*s - halfsizeY*c  (Y flipped)
+    let tl_x = threeX - halfsizeX * c - halfsizeY * s;
+    let tl_z = threeZ + halfsizeX * s - halfsizeY * c;
 
     let marked = 0;
     const alreadyMarked = new Set();
 
-    for (let iy = 0; iy <= numStepsY; iy++) {
-      for (let ix = 0; ix <= numStepsX; ix++) {
-        const wx = tlX + stepXX * ix + stepYX * iy;
-        const wz = tlZ + stepXZ * ix + stepYZ * iy;
-
-        const cx = Math.floor((wx + 0.5) / PATHFIND_CELL_SIZE);
-        const cz = Math.floor((wz + 0.5) / PATHFIND_CELL_SIZE);
+    for (let iy = 0; iy < numStepsY; iy++, tl_x += ydx, tl_z += ydz) {
+      let x = tl_x;
+      let z = tl_z;
+      for (let ix = 0; ix < numStepsX; ix++, x += xdx, z += xdz) {
+        const cx = Math.floor((x + 0.5) / PATHFIND_CELL_SIZE);
+        const cz = Math.floor((z + 0.5) / PATHFIND_CELL_SIZE);
 
         if (cx < 0 || cx >= this.width || cz < 0 || cz >= this.height) continue;
         const key = cz * this.width + cx;
@@ -568,7 +585,38 @@ export class PathfindGrid {
       }
     }
 
-    console.log(`Debug overlay: ${group.children.length} cells visualized`);
+    // Draw wireframe outlines for each stored footprint box
+    if (this._debugFootprints) {
+      const lineMat = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 2, depthTest: false });
+      for (const fp of this._debugFootprints) {
+        const { threeX, threeZ, halfsizeX, halfsizeY, angle } = fp;
+        const cosA = Math.cos(angle);
+        const sinA = Math.sin(angle);
+
+        // Four corners using same transform as _markBoxFootprint (Generals conversion)
+        // Corner order: NW → NE → SE → SW (in map terms)
+        const corners = [
+          [-halfsizeX, -halfsizeY],
+          [+halfsizeX, -halfsizeY],
+          [+halfsizeX, +halfsizeY],
+          [-halfsizeX, +halfsizeY],
+        ].map(([lx, ly]) => {
+          // Generals: worldX = lx*c - ly*s + cx, worldY = lx*s + ly*c + cy
+          // Three.js: same X, Z = -(lx*s + ly*c) + cz
+          const wx = lx * cosA - ly * sinA + threeX;
+          const wz = -(lx * sinA + ly * cosA) + threeZ;
+          let wy = 1;
+          try { wy = getTerrainHeight(wx, wz) + 1.5; } catch { wy = 1.5; }
+          return new THREE.Vector3(wx, wy, wz);
+        });
+
+        corners.push(corners[0].clone());
+        const geo = new THREE.BufferGeometry().setFromPoints(corners);
+        group.add(new THREE.Line(geo, lineMat));
+      }
+    }
+
+    console.log(`Debug overlay: ${group.children.length} elements visualized`);
     return group;
   }
 }

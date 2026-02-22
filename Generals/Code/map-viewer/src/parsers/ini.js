@@ -40,21 +40,34 @@ export function parseObjectINIsFromPool() {
   }
   console.groupEnd();
   console.log(`Object INI: ${objectModelMap.size} object→model mappings, ${objectKindOfMap.size} KindOf entries, ${objectGeometryMap.size} GeometryInfo entries`);
+
+  // Debug: dump a sample of parsed KindOf entries so user can verify data
+  console.groupCollapsed(`KindOf sample (first 30 of ${objectKindOfMap.size})`);
+  let sampleCount = 0;
+  for (const [name, flags] of objectKindOfMap) {
+    if (sampleCount++ >= 30) break;
+    console.log(`  ${name}: ${[...flags].join(' ')}`);
+  }
+  console.groupEnd();
 }
 
 /**
  * Mirrors Generals' recursive-descent INI parser (INI.cpp: initFromINIMulti).
- * In Generals, each block type calls initFromINI which reads lines until END.
- * Sub-blocks (modules) do the same via recursive calls from field handlers.
- * We replicate this: the top-level loop finds "Object Name", then
- * parseObjectBlock() reads until the Object's END, calling sub-parsers
- * for Draw, Body, Behavior etc. which each read until their own END.
+ *
+ * In Generals, the top-level loop dispatches block types. Each Object block
+ * calls initFromINI which reads lines until END. Sub-blocks (modules like
+ * Behavior, Body, Draw, and keyword blocks like ArmorSet, AddModule, etc.)
+ * each consume lines until their own END.
+ *
+ * Our parser uses depth counting to handle nested END tokens correctly.
+ * This avoids the fragile approach of trying to enumerate all sub-block types,
+ * which broke when Zero Hour sub-blocks (AddModule, ReplaceModule, etc.) were
+ * not detected, causing their END to be mistaken for the Object's END.
  */
 function parseObjectINI(text) {
   const lines = text.split(/\r?\n/);
   let lineIdx = 0;
 
-  // Mirrors INI::readLine -- returns next non-empty line, stripped of comments
   function nextLine() {
     while (lineIdx < lines.length) {
       const raw = lines[lineIdx++];
@@ -64,7 +77,6 @@ function parseObjectINI(text) {
     return null;
   }
 
-  // Mirrors INI::load -- top-level loop dispatches block types
   let line;
   while ((line = nextLine()) !== null) {
     const objMatch = line.match(/^(?:Object|ObjectReskin)\s+(\S+)/i);
@@ -74,19 +86,46 @@ function parseObjectINI(text) {
   }
 
   /**
-   * Mirrors ThingFactory::parseObjectDefinition -> ini->initFromINI(template, fieldParse).
-   * Reads the body of one Object block until END.
-   * Dispatches known fields; unknown sub-blocks are skipped via skipToEnd().
+   * Reads the body of one Object block until its closing END.
+   *
+   * Uses depth counting: each END decrements depth; the Object's own END
+   * is when depth hits 0.
+   *
+   * Sub-block detection uses a structural heuristic rather than keyword
+   * enumeration (which was fragile — e.g. "CommandSet = Name" was wrongly
+   * treated as a block, while nested "Turret" blocks were missed).
+   *
+   * In Generals' INI format, every simple field uses "Key = Value" syntax.
+   * Sub-blocks either lack "=" (WeaponSet, ArmorSet, Turret, Prerequisites)
+   * or contain "ModuleTag" (Behavior, Body, Draw module definitions).
+   * The one exception is "Draw = W3D..." which we handle specially.
    */
   function parseObjectBlock(objectName) {
     let geom = null;
+    let depth = 1;
     let line;
 
     while ((line = nextLine()) !== null) {
       if (/^End$/i.test(line)) {
-        if (geom) objectGeometryMap.set(objectName, geom);
-        return;
+        depth--;
+        if (depth <= 0) {
+          if (geom) {
+            objectGeometryMap.set(objectName, geom);
+          }
+          return;
+        }
+        continue;
       }
+
+      // Inside a sub-block (depth > 1): only track nesting, don't parse fields.
+      // Lines without "=" are sub-block starts (Turret, Prerequisites, etc.).
+      // Lines with ModuleTag are nested module blocks (rare but possible).
+      if (depth > 1) {
+        if (!/=/.test(line) || /\bModuleTag\b/i.test(line)) depth++;
+        continue;
+      }
+
+      // --- depth === 1: we're at Object root level ---
 
       // --- KindOf (root-level field) ---
       const kindMatch = line.match(/^\s*KindOf\s*=\s*(.+)/i);
@@ -133,57 +172,52 @@ function parseObjectINI(text) {
         continue;
       }
 
-      // --- Any other sub-block: skip to its END ---
-      // In Generals, sub-blocks are module definitions (have ModuleTag),
-      // Draw (non-W3D), and keyword blocks (ArmorSet, WeaponSet, etc.).
-      // Each ends with END, mirroring initFromINIMulti.
-      if (isSubBlockStart(line)) {
-        skipToEnd();
+      // --- Module definitions (Behavior/Body/Draw with ModuleTag) ---
+      if (/\bModuleTag\b/i.test(line)) {
+        depth++;
         continue;
+      }
+
+      // --- Any line without "=" is a sub-block start ---
+      // Catches: WeaponSet, ArmorSet, LocomotorSet, Prerequisites,
+      // UnitSpecificSounds, UnitSpecificFX, AddModule, RemoveModule, etc.
+      if (!/=/.test(line)) {
+        depth++;
+        continue;
+      }
+
+      // --- Simple Key = Value fields ---
+      // Model at root level (some objects define it outside Draw)
+      if (!objectModelMap.has(objectName)) {
+        const modelMatch = line.match(/^\s*(?:Model|ModelName)\s*=\s*(\S+)/i);
+        if (modelMatch) {
+          objectModelMap.set(objectName, modelMatch[1].toLowerCase());
+        }
       }
     }
   }
 
   /**
-   * Mirrors W3DModelDraw module parser.
-   * Reads lines inside a Draw = W3D... block until END.
-   * Extracts model names from ConditionState/DefaultConditionState or root.
+   * Parse a Draw = W3D... block for model names.
+   * Uses depth counting for nested ConditionState/TransitionState blocks.
+   * Model/ModelName can appear at any depth (root or inside ConditionState).
    */
   function parseW3DDrawBlock(objectName) {
+    let depth = 1;
     let line;
     while ((line = nextLine()) !== null) {
-      if (/^End$/i.test(line)) return;
-
-      // ConditionState / DefaultConditionState sub-block
-      if (/^\s*(?:Default)?ConditionState\b/i.test(line)) {
-        parseConditionState(objectName);
+      if (/^End$/i.test(line)) {
+        depth--;
+        if (depth <= 0) return;
         continue;
       }
 
-      // TransitionState or other sub-blocks inside Draw
-      if (/^\s*TransitionState\b/i.test(line) || isSubBlockStart(line)) {
-        skipToEnd();
-        continue;
+      // ConditionState/TransitionState are blocks WITH "=" (e.g. "ConditionState = RUBBLE").
+      // DefaultConditionState and any other bare keywords (no "=") are also blocks.
+      if (/^\s*(?:ConditionState|TransitionState)\s*=/i.test(line) ||
+          !/=/.test(line)) {
+        depth++;
       }
-
-      // Model at Draw root level
-      if (!objectModelMap.has(objectName)) {
-        const modelMatch = line.match(/^\s*(?:Model|ModelName)\s*=\s*(\S+)/i);
-        if (modelMatch) {
-          objectModelMap.set(objectName, modelMatch[1].toLowerCase());
-        }
-      }
-    }
-  }
-
-  /**
-   * Reads a ConditionState/DefaultConditionState sub-block until END.
-   * Extracts model/ModelName.
-   */
-  function parseConditionState(objectName) {
-    let line;
-    while ((line = nextLine()) !== null) {
-      if (/^End$/i.test(line)) return;
 
       if (!objectModelMap.has(objectName)) {
         const modelMatch = line.match(/^\s*(?:Model|ModelName)\s*=\s*(\S+)/i);
@@ -192,37 +226,6 @@ function parseObjectINI(text) {
         }
       }
     }
-  }
-
-  /**
-   * Mirrors initFromINIMulti for a block we don't care about.
-   * Reads lines until END, handling nested sub-blocks recursively.
-   */
-  function skipToEnd() {
-    let line;
-    while ((line = nextLine()) !== null) {
-      if (/^End$/i.test(line)) return;
-
-      // If this line starts a nested sub-block, skip it recursively
-      if (isSubBlockStart(line) ||
-          /^\s*(?:Default)?ConditionState\b/i.test(line) ||
-          /^\s*TransitionState\b/i.test(line)) {
-        skipToEnd();
-      }
-    }
-  }
-
-  /**
-   * Detects lines that start a sub-block requiring its own END.
-   * Module definitions: "Foo = Bar ModuleTag_XX"
-   * Keyword blocks: ArmorSet, WeaponSet, LocomotorSet, etc.
-   * Draw modules (non-W3D handled here as generic skip).
-   */
-  function isSubBlockStart(line) {
-    if (/\bModuleTag\b/i.test(line)) return true;
-    if (/^\s*(?:Draw|ArmorSet|WeaponSet|LocomotorSet|CommandSet|UpgradeSet|UnitSpecificSounds)\s*=/i.test(line)) return true;
-    if (/^\s*(?:ArmorSet|WeaponSet|LocomotorSet|UnitSpecificSounds)\s*$/i.test(line)) return true;
-    return false;
   }
 }
 
