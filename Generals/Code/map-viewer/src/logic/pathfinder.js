@@ -24,10 +24,6 @@ const TURN_COST_45  = 1;
 const TURN_COST_90  = 2;
 const TURN_COST_135 = 4;
 
-/**
- * A* cell info used during pathfinding. Pooled per-search.
- * Mirrors PathfindCellInfo.
- */
 class CellInfo {
   constructor() {
     this.reset();
@@ -43,10 +39,6 @@ class CellInfo {
   }
 }
 
-/**
- * Binary min-heap for the A* open list.
- * Sorted by totalCost (costSoFar + heuristic).
- */
 class BinaryHeap {
   constructor() {
     this.data = [];
@@ -112,19 +104,12 @@ export class Pathfinder {
     this.openList = new BinaryHeap();
   }
 
-  /**
-   * Queue a unit for pathfinding. Mirrors Pathfinder::queueForPath.
-   */
   queueForPath(unitId) {
     if (!this.pathQueue.includes(unitId)) {
       this.pathQueue.push(unitId);
     }
   }
 
-  /**
-   * Process queued pathfinding requests with a per-frame cell budget.
-   * Mirrors Pathfinder::processPathfindQueue (AIPathfind.cpp:5415).
-   */
   processPathfindQueue() {
     let cellBudget = PATHFIND_CELLS_PER_FRAME;
 
@@ -134,37 +119,42 @@ export class Pathfinder {
       if (!unit || !unit.ai || !unit.ai.waitingForPath) continue;
 
       unit.ai.doPathfind(this);
-      cellBudget -= 500; // approximate cost per path
+      cellBudget -= 500;
     }
   }
 
-  /**
-   * Find a path from start to goal using A*.
-   * Mirrors Pathfinder::internalFindPath (AIPathfind.cpp:6098).
-   */
   findPath(from, to, unit) {
     const grid = this.grid;
     if (!grid) return null;
 
     const startCell = grid.worldToCell(from.x, from.z);
     const goalCell = grid.worldToCell(to.x, to.z);
+    const unitId = unit ? unit.id : 0;
 
-    // Zone check -- quick reject if unreachable
-    const startZone = grid.getZone(startCell.x, startCell.y);
+    // Get unit's pathfinding radius (mirrors getRadiusAndCenter)
+    const collisionRadius = (unit && unit.ai) ? unit.ai.locomotor.collisionRadius : 5;
+    const { radius: pathRadius, centerInCell } = grid.getRadiusAndCenter(collisionRadius);
+
+    let startZone = grid.getZone(startCell.x, startCell.y);
     const goalZone = grid.getZone(goalCell.x, goalCell.y);
-    if (startZone !== goalZone || startZone === 0) {
-      return this.findClosestPath(from, to, unit, startCell, goalCell);
+
+    // If unit starts on an obstacle cell (zone 0), find the nearest passable cell
+    // and use that as the effective start for zone comparison.
+    if (startZone === 0) {
+      const fixedStart = this._findNearestPassableCell(startCell.x, startCell.y);
+      if (!fixedStart) return null;
+      startCell = fixedStart;
+      startZone = grid.getZone(fixedStart.x, fixedStart.y);
     }
 
-    return this.internalFindPath(startCell, goalCell, from, to);
+    if (startZone !== goalZone || startZone === 0) {
+      return this.findClosestPath(from, to, unit, startCell, goalCell, pathRadius, centerInCell);
+    }
+
+    return this.internalFindPath(startCell, goalCell, from, to, unitId, pathRadius, centerInCell);
   }
 
-  /**
-   * If goal is unreachable, find path to nearest reachable cell.
-   * Mirrors Pathfinder::findClosestPath.
-   */
-  findClosestPath(from, to, unit, startCell, goalCell) {
-    // Find closest passable cell to the goal
+  findClosestPath(from, to, unit, startCell, goalCell, pathRadius, centerInCell) {
     const grid = this.grid;
     const startZone = grid.getZone(startCell.x, startCell.y);
     let bestDist = Infinity;
@@ -190,10 +180,15 @@ export class Pathfinder {
 
     const newGoal = { x: bestX, y: bestY };
     const world = grid.cellToWorld(bestX, bestY);
-    return this.internalFindPath(startCell, newGoal, from, { x: world.x, y: 0, z: world.z });
+    const unitId = unit ? unit.id : 0;
+    return this.internalFindPath(startCell, newGoal, from, { x: world.x, y: 0, z: world.z }, unitId, pathRadius, centerInCell);
   }
 
-  internalFindPath(startCell, goalCell, fromWorld, toWorld) {
+  /**
+   * A* pathfinding. Now uses radius-based block check matching
+   * Generals' checkForMovement (checks a square block of cells per step).
+   */
+  internalFindPath(startCell, goalCell, fromWorld, toWorld, requestingUnitId = 0, pathRadius = 0, centerInCell = false) {
     const grid = this.grid;
     this.cellInfoPool.clear();
     this.openList.clear();
@@ -231,26 +226,23 @@ export class Pathfinder {
       currentInfo.onOpen = false;
       cellCount++;
 
-      // Goal reached
       if (cx === goalCell.x && cy === goalCell.y) {
-        return this.buildActualPath(getCellInfo, startCell, goalCell, fromWorld, toWorld);
+        return this.buildActualPath(getCellInfo, startCell, goalCell, fromWorld, toWorld, pathRadius, centerInCell, requestingUnitId);
       }
 
-      // Examine 8 neighbors (mirrors examineNeighboringCells)
       for (let i = 0; i < 8; i++) {
         const nx = cx + DELTA[i].dx;
         const ny = cy + DELTA[i].dy;
 
         if (nx < 0 || nx >= grid.width || ny < 0 || ny >= grid.height) continue;
 
-        const cellType = grid.getCell(nx, ny);
-        if (!grid.isCellPassable(cellType)) continue;
+        // Mirrors checkForMovement: check a radius-sized block of cells
+        if (!grid.checkMovementBlock(nx, ny, requestingUnitId, pathRadius, centerInCell)) continue;
 
-        // Diagonal movement: check both adjacent cells are passable
+        // Diagonal: both adjacent cells must also be passable for the block
         if (i >= 4) {
-          const adj1 = grid.getCell(cx + DELTA[i].dx, cy);
-          const adj2 = grid.getCell(cx, cy + DELTA[i].dy);
-          if (!grid.isCellPassable(adj1) || !grid.isCellPassable(adj2)) continue;
+          if (!grid.checkMovementBlock(cx + DELTA[i].dx, cy, requestingUnitId, pathRadius, centerInCell) ||
+              !grid.checkMovementBlock(cx, cy + DELTA[i].dy, requestingUnitId, pathRadius, centerInCell)) continue;
         }
 
         const neighborInfo = getCellInfo(nx, ny);
@@ -258,7 +250,12 @@ export class Pathfinder {
 
         let moveCost = DELTA[i].cost;
 
-        // Turn cost (mirrors PathfindCell::costSoFar with turn penalty)
+        // Soft penalty for cells with moving units
+        const nIdx = ny * grid.width + nx;
+        if (grid.unitPresence[nIdx] !== 0 && grid.unitPos[nIdx] !== requestingUnitId) {
+          moveCost += COST_ORTHOGONAL * 3;
+        }
+
         if (currentInfo.parentDir >= 0) {
           const dirDiff = Math.abs(i - currentInfo.parentDir);
           const turnAmount = Math.min(dirDiff, 8 - dirDiff);
@@ -284,19 +281,13 @@ export class Pathfinder {
       }
     }
 
-    // No path found
     return null;
   }
 
-  /**
-   * Build the path by tracing parents from goal to start.
-   * Mirrors Pathfinder::buildActualPath (AIPathfind.cpp:8358).
-   */
-  buildActualPath(getCellInfo, startCell, goalCell, fromWorld, toWorld) {
+  buildActualPath(getCellInfo, startCell, goalCell, fromWorld, toWorld, pathRadius, centerInCell, requestingUnitId = 0) {
     const grid = this.grid;
     const path = new Path();
 
-    // Trace back from goal to start
     let cx = goalCell.x, cy = goalCell.y;
     const visited = new Set();
 
@@ -315,25 +306,118 @@ export class Pathfinder {
       cy = info.parentY;
     }
 
-    // Prepend exact start position
     path.prependNode(fromWorld.x, fromWorld.y, fromWorld.z);
 
-    // Set exact goal position on last node
     if (path.tail && toWorld) {
       path.tail.pos.x = toWorld.x;
       path.tail.pos.z = toWorld.z;
       path.tail.pos.y = getTerrainHeightAtSafe(toWorld.x, toWorld.z);
     }
 
-    // Optimize path with LOS checks
-    path.optimize(grid);
+    path.optimize(grid, pathRadius, centerInCell, requestingUnitId);
     return path;
+  }
+
+  _findNearestPassableCell(cx, cy) {
+    const grid = this.grid;
+    for (let r = 1; r <= 10; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+          const nx = cx + dx, ny = cy + dy;
+          if (nx < 0 || nx >= grid.width || ny < 0 || ny >= grid.height) continue;
+          if (grid.getZone(nx, ny) > 0) {
+            return { x: nx, y: ny };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Mirrors Pathfinder::isLinePassable (AIPathfind.cpp:9025-9041).
+   * For each cell along the Bresenham line, checks a radius-sized block
+   * using checkMovementBlock (matching linePassableCallback -> checkForMovement).
+   */
+  isLinePassable(grid, from, to, pathRadius, centerInCell, requestingUnitId = 0) {
+    const cellFrom = grid.worldToCell(from.x, from.z);
+    const cellTo = grid.worldToCell(to.x, to.z);
+
+    let x0 = cellFrom.x, y0 = cellFrom.y;
+    const x1 = cellTo.x, y1 = cellTo.y;
+
+    const dx = Math.abs(x1 - x0);
+    const dy = Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1;
+    const sy = y0 < y1 ? 1 : -1;
+    let err = dx - dy;
+
+    while (true) {
+      // At each cell along the line, check the full radius block
+      // (mirrors linePassableCallback calling checkForMovement with radius)
+      if (!grid.checkMovementBlock(x0, y0, requestingUnitId, pathRadius, centerInCell)) {
+        return false;
+      }
+
+      if (x0 === x1 && y0 === y1) break;
+
+      const e2 = 2 * err;
+      if (e2 > -dy) { err -= dy; x0 += sx; }
+      if (e2 < dx)  { err += dx; y0 += sy; }
+    }
+    return true;
+  }
+
+  /**
+   * Mirrors getMoveAwayFromPath (AIPathfind.cpp).
+   * Finds a short path for a unit to step aside from a blocking unit's path.
+   * Uses the pathfinder to find a valid destination (not a naive offset).
+   */
+  getMoveAwayFromPath(unit, blockerUnit) {
+    const grid = this.grid;
+    if (!grid) return null;
+
+    const pos = unit.position;
+    const blockerPos = blockerUnit.position;
+
+    // Compute away direction
+    const awayDx = pos.x - blockerPos.x;
+    const awayDz = pos.z - blockerPos.z;
+    const awayDist = Math.sqrt(awayDx * awayDx + awayDz * awayDz);
+    if (awayDist < 0.001) return null;
+
+    const nx = awayDx / awayDist;
+    const nz = awayDz / awayDist;
+
+    // Try several distances to find a passable cell (spiral outward)
+    const collisionRadius = unit.ai ? unit.ai.locomotor.collisionRadius : 5;
+    const { radius: pathRadius, centerInCell } = grid.getRadiusAndCenter(collisionRadius);
+    const stepDist = PATHFIND_CELL_SIZE * 2;
+
+    for (let dist = stepDist; dist <= stepDist * 4; dist += stepDist) {
+      // Try the away direction first, then perpendicular
+      const candidates = [
+        { x: pos.x + nx * dist, z: pos.z + nz * dist },
+        { x: pos.x + nz * dist, z: pos.z - nx * dist },
+        { x: pos.x - nz * dist, z: pos.z + nx * dist },
+      ];
+
+      for (const cand of candidates) {
+        const cell = grid.worldToCell(cand.x, cand.z);
+        if (grid.checkMovementBlock(cell.x, cell.y, unit.id, pathRadius, centerInCell)) {
+          // Valid destination -- find path to it
+          const startCell = grid.worldToCell(pos.x, pos.z);
+          const goalCell = cell;
+          return this.internalFindPath(startCell, goalCell, pos,
+            { x: cand.x, y: pos.y, z: cand.z }, unit.id, pathRadius, centerInCell);
+        }
+      }
+    }
+    return null;
   }
 }
 
-/**
- * Octile distance heuristic matching PathfindCell::costToGoal.
- */
 function costToGoal(x, y, gx, gy) {
   const dx = Math.abs(x - gx);
   const dy = Math.abs(y - gy);

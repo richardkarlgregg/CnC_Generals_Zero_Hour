@@ -1,9 +1,6 @@
 // Mirrors Path and PathNode from AIPathfind.h
 // Path is a linked list of nodes; optimize() does LOS-based smoothing.
 
-/**
- * Mirrors PathNode (AIPathfind.h ~57-125).
- */
 export class PathNode {
   constructor(x, y, z) {
     this.pos = { x, y, z };
@@ -55,11 +52,15 @@ export class Path {
   }
 
   /**
-   * Mirrors Path::optimize() from AIPathfind.cpp:457-579.
-   * Line-of-sight optimization: for each anchor, find the farthest reachable node
-   * in a straight passable line, and set it as nextOptimized.
+   * Mirrors Path::optimize() from AIPathfind.cpp:454-583.
+   * For each anchor, finds the farthest node with clear LOS and sets nextOptimized.
+   *
+   * In Generals, isLinePassable is called with the unit's pathfind radius
+   * (from getRadiusAndCenter), so at each cell along the Bresenham line, a
+   * radius-sized block is checked via checkForMovement. We mirror this by
+   * checking a block of cells at each step.
    */
-  optimize(grid) {
+  optimize(grid, pathRadius = 0, centerInCell = false, requestingUnitId = 0) {
     if (!this.head || this.nodeCount < 2) {
       if (this.head) {
         this.head.nextOptimized = null;
@@ -78,7 +79,7 @@ export class Path {
       while (test) {
         if (!farthestPassable.canOptimize) break;
 
-        if (grid && isLinePassable(grid, anchor.pos, test.pos)) {
+        if (grid && isLinePassableWithRadius(grid, anchor.pos, test.pos, pathRadius, centerInCell, requestingUnitId)) {
           farthestPassable = test;
         } else {
           break;
@@ -88,7 +89,6 @@ export class Path {
 
       anchor.nextOptimized = farthestPassable;
 
-      // Compute direction and distance for locomotor
       const dx = farthestPassable.pos.x - anchor.pos.x;
       const dz = farthestPassable.pos.z - anchor.pos.z;
       anchor.nextOptDist = Math.sqrt(dx * dx + dz * dz);
@@ -103,7 +103,6 @@ export class Path {
       anchor = farthestPassable;
     }
 
-    // Last node has no next
     if (anchor) {
       anchor.nextOptimized = null;
     }
@@ -115,10 +114,11 @@ export class Path {
 }
 
 /**
- * Bresenham line check on the pathfinding grid.
- * Mirrors isLinePassable in AIPathfind.cpp.
+ * Mirrors Pathfinder::isLinePassable + linePassableCallback + checkForMovement.
+ * Bresenham line walk, checking a radius-sized block of cells at each step.
+ * This ensures the optimized path doesn't clip building corners or narrow gaps.
  */
-function isLinePassable(grid, from, to) {
+function isLinePassableWithRadius(grid, from, to, pathRadius, centerInCell, requestingUnitId = 0) {
   const cellFrom = grid.worldToCell(from.x, from.z);
   const cellTo = grid.worldToCell(to.x, to.z);
 
@@ -132,7 +132,8 @@ function isLinePassable(grid, from, to) {
   let err = dx - dy;
 
   while (true) {
-    if (!grid.isCellPassable(grid.getCell(x0, y0))) return false;
+    // Mirrors linePassableCallback -> checkForMovement + validMovementPosition
+    if (!grid.checkMovementBlock(x0, y0, requestingUnitId, pathRadius, centerInCell)) return false;
 
     if (x0 === x1 && y0 === y1) break;
 

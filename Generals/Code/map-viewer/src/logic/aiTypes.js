@@ -28,6 +28,7 @@ export const AIStateType = Object.freeze({
   AI_DEAD:                                13,
   AI_GUARD:                               16,
   AI_ATTACK_MOVE_TO:                      30,
+  AI_MOVE_OUT_OF_THE_WAY:                 85,
 });
 
 // Mirrors CommandSourceType

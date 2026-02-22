@@ -50,6 +50,9 @@ export class AIStateMachine {
       case AIStateType.AI_IDLE:
         ai.onIdle();
         break;
+      case AIStateType.AI_MOVE_OUT_OF_THE_WAY:
+        ai.requestPath(this.goalPosition);
+        break;
     }
   }
 
@@ -76,6 +79,39 @@ export class AIStateMachine {
 
       case AIStateType.AI_DEAD:
         break;
+
+      case AIStateType.AI_MOVE_OUT_OF_THE_WAY:
+        this.updateMoveOutOfTheWay(dt);
+        break;
+    }
+  }
+
+  /**
+   * Mirrors AIMoveOutOfTheWayState: move along path, then revert to previous state.
+   * Timer-based: after moveOutOfWayTimer expires or path completes, go idle.
+   */
+  updateMoveOutOfTheWay(dt) {
+    const ai = this.aiUpdate;
+
+    ai.moveOutOfWayTimer--;
+    if (ai.moveOutOfWayTimer <= 0) {
+      ai.currentPath = null;
+      ai.locomotor.stop();
+      this.setState(AIStateType.AI_IDLE);
+      return;
+    }
+
+    if (ai.waitingForPath) return;
+
+    if (!ai.currentPath) {
+      this.setState(AIStateType.AI_IDLE);
+      return;
+    }
+
+    const arrived = ai.locomotor.followPath(ai.currentPath, ai.unit, dt);
+    if (arrived) {
+      ai.currentPath = null;
+      this.setState(AIStateType.AI_IDLE);
     }
   }
 

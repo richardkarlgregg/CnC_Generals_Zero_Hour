@@ -5,6 +5,7 @@ import { AICommandType, AIStateType, AICommandParms, CommandSourceType } from '.
 import { AIStateMachine } from './aiStateMachine.js';
 import { Locomotor } from './locomotor.js';
 import { MAX_WAYPOINTS } from '../constants.js';
+import state from '../state.js';
 
 let _pathfinderRef = null;
 
@@ -34,6 +35,15 @@ export class AIUpdate {
 
     this.blockedFrames = 0;
     this.isBlocked = false;
+    this.isBlockedAndStuck = false;
+
+    // Repath cooldown (frames since last repath attempt)
+    this.repathCooldown = 0;
+
+    // Move-out-of-the-way state (mirrors AI_MOVE_OUT_OF_THE_WAY timer)
+    this.moveOutOfWayTimer = 0;
+    this._savedState = null;
+    this._savedGoal = null;
   }
 
   /**
@@ -100,6 +110,38 @@ export class AIUpdate {
     const parms = new AICommandParms(AICommandType.AICMD_FOLLOW_PATH_APPEND, cmdSource);
     parms.pos = { ...pos };
     this.aiDoCommand(parms);
+  }
+
+  /**
+   * Ask this unit to move out of another unit's way.
+   * Mirrors AIUpdate::privateMoveAwayFromUnit (AIUpdate.cpp:3068-3124).
+   *
+   * In Generals: gets the blocker's path, calls getMoveAwayFromPath to find
+   * a proper pathed route away, sets temporary state AI_MOVE_OUT_OF_THE_WAY
+   * for 10 seconds, then calls moveAllies on that path.
+   */
+  aiMoveAwayFromUnit(requestingUnit) {
+    if (!this.unit.isMobile()) return;
+    // Don't interrupt player commands (unless idle)
+    if (this.lastCommandSource === CommandSourceType.CMD_FROM_PLAYER &&
+        this.stateMachine.getState() !== AIStateType.AI_IDLE) return;
+
+    // Mirrors privateMoveAwayFromUnit: use pathfinder to find move-away path
+    if (_pathfinderRef) {
+      const newPath = _pathfinderRef.getMoveAwayFromPath(this.unit, requestingUnit);
+      if (newPath) {
+        this.stateMachine.clear();
+        this.currentPath = newPath;
+        this.waitingForPath = false;
+        this.blockedFrames = 0;
+        this.isBlocked = false;
+        // Mirrors: setTemporaryState(AI_MOVE_OUT_OF_THE_WAY, 10*LOGICFRAMES_PER_SECOND)
+        // 10 seconds at 30fps = 300 frames
+        this.moveOutOfWayTimer = 300;
+        this.stateMachine.currentState = AIStateType.AI_MOVE_OUT_OF_THE_WAY;
+        return;
+      }
+    }
   }
 
   // --- Private command handlers mirroring AIUpdate.cpp ---
@@ -230,9 +272,93 @@ export class AIUpdate {
 
   /**
    * Per-frame update. Mirrors AIUpdateInterface::update().
+   * Includes unit occupancy grid updates and blocked/repath handling.
    */
   update(dt) {
+    // Update unit position on the pathfind grid (mirrors Pathfinder::updatePos)
+    this.updateGridOccupancy();
+
+    // Handle blocked/stuck detection and repath (mirrors processCollision + doLocomotor)
+    this.handleBlocked();
+
     this.stateMachine.update(dt);
     this.unit.syncMeshFromPosition();
+
+    if (this.repathCooldown > 0) this.repathCooldown--;
+  }
+
+  /**
+   * Update this unit's position and goal on the pathfind grid.
+   * Mirrors the Object position change -> Pathfinder::updatePos call.
+   */
+  updateGridOccupancy() {
+    if (!_pathfinderRef || !_pathfinderRef.grid) return;
+    const grid = _pathfinderRef.grid;
+    const isMoving = !this.locomotor.stopped;
+
+    grid.updateUnitPos(this.unit.id, this.unit.position.x, this.unit.position.z, isMoving);
+
+    // Update goal cell if we have a destination
+    if (this.stateMachine.goalPosition) {
+      grid.updateUnitGoal(this.unit.id, this.stateMachine.goalPosition.x, this.stateMachine.goalPosition.z);
+    }
+  }
+
+  /**
+   * Handle blocked/stuck state. Mirrors AIUpdate's m_blockedFrames logic:
+   * - After ~30 blocked frames, mark as stuck and request a repath.
+   * - Repath uses the current goal but generates a new path from the current position.
+   */
+  handleBlocked() {
+    const BLOCKED_REPATH_THRESHOLD = 30;
+    const ASK_MOVE_THRESHOLD = 15;
+
+    if (this.blockedFrames > ASK_MOVE_THRESHOLD && this.blockedFrames <= BLOCKED_REPATH_THRESHOLD) {
+      // Ask blocking unit to move out of the way (mirrors moveAllies / aiMoveAwayFromUnit)
+      this.askBlockerToMove();
+    }
+
+    if (this.blockedFrames > BLOCKED_REPATH_THRESHOLD && this.repathCooldown <= 0) {
+      this.isBlockedAndStuck = true;
+
+      if (this.stateMachine.goalPosition && this.stateMachine.getState() !== AIStateType.AI_IDLE) {
+        this.blockedFrames = 0;
+        this.isBlocked = false;
+        this.isBlockedAndStuck = false;
+        this.repathCooldown = 60;
+        this.requestPath(this.stateMachine.goalPosition);
+      }
+    }
+  }
+
+  /**
+   * Find the nearest blocking unit and ask it to move away.
+   * Mirrors processCollision deadlock handling + aiMoveAwayFromUnit.
+   */
+  askBlockerToMove() {
+    const pos = this.unit.position;
+    const myRadius = this.locomotor.collisionRadius;
+    let closestDist = Infinity;
+    let blocker = null;
+
+    for (const other of state.units.values()) {
+      if (other.id === this.unit.id) continue;
+      if (!other.ai || !other.isMobile()) continue;
+      if (!other.ai.locomotor.stopped) continue;
+
+      const dx = pos.x - other.position.x;
+      const dz = pos.z - other.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      const minDist = myRadius + other.ai.locomotor.collisionRadius;
+
+      if (dist < minDist * 1.5 && dist < closestDist) {
+        closestDist = dist;
+        blocker = other;
+      }
+    }
+
+    if (blocker && blocker.ai.stateMachine.getState() === AIStateType.AI_IDLE) {
+      blocker.ai.aiMoveAwayFromUnit(this.unit);
+    }
   }
 }

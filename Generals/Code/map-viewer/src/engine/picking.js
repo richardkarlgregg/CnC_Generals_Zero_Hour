@@ -9,6 +9,8 @@ const tmpVec3 = new THREE.Vector3();
 /**
  * Pick a single unit at a screen position via raycasting.
  * Mirrors W3DView::pickDrawable -- builds a ray from camera through screen point.
+ * Prefers mobile units over structures (in Generals, clicking a unit near a building
+ * selects the unit, not the building, when both are under the cursor).
  */
 export function pickUnit(screenX, screenY) {
   const { camera, objectMarkers } = state;
@@ -28,11 +30,19 @@ export function pickUnit(screenX, screenY) {
   });
 
   const intersects = raycaster.intersectObjects(meshes, false);
+
+  let firstMobile = null;
+  let firstAny = null;
+
   for (const hit of intersects) {
     const unit = findUnitForObject(hit.object);
-    if (unit) return unit;
+    if (!unit) continue;
+    if (!firstAny) firstAny = unit;
+    if (!firstMobile && unit.isMobile()) firstMobile = unit;
+    if (firstMobile) break;
   }
-  return null;
+
+  return firstMobile || firstAny;
 }
 
 /**

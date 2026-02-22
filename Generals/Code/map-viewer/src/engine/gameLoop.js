@@ -1,6 +1,14 @@
 // Game loop: fixed-timestep update alongside the render loop.
 // Mirrors the Generals frame pipeline:
-//   input -> selection/command -> dispatch -> pathfinder -> AI update -> render
+//   input -> selection/command -> dispatch -> pathfinder ->
+//   physics collision -> AI update (doLocomotor) -> render
+//
+// In Generals:
+// 1. Messages dispatched
+// 2. Pathfinder processes queue
+// 3. PhysicsUpdate runs (overlap detection -> processCollision -> force)
+// 4. AIUpdate::update (doLocomotor reads m_blockedFrames, calls locomotor)
+// 5. Render
 
 import state from '../state.js';
 import { MessageStream } from './messageStream.js';
@@ -10,26 +18,22 @@ import { updateSelectionTranslatorFrame } from './selectionTranslator.js';
 import { PathfindGrid } from '../logic/pathfindGrid.js';
 import { Pathfinder } from '../logic/pathfinder.js';
 import { AIUpdate, setPathfinderRef } from '../logic/aiUpdate.js';
+import { resolvePhysicsCollisions } from '../logic/locomotor.js';
 
 let initialized = false;
 
-/**
- * Initialize the game systems. Call once after the scene and terrain are built.
- */
 export function initGameSystems() {
   if (initialized) return;
 
   state.messageStream = new MessageStream();
   initSelectionIndicators();
 
-  // Attach AI to all mobile units
   for (const unit of state.units.values()) {
     if (unit.isMobile()) {
       unit.ai = new AIUpdate(unit);
     }
   }
 
-  // Build pathfinding grid from terrain
   const mapData = state.currentMapData;
   if (mapData && mapData.heightMap) {
     const grid = new PathfindGrid();
@@ -55,11 +59,12 @@ function countMobile() {
 
 /**
  * Per-frame game update. Called from animate() before render.
+ * Mirrors the Generals frame pipeline order.
  */
 export function updateGameSystems(dt) {
   if (!initialized) return;
 
-  // 1. Update frame counter for selection translator
+  // 1. Selection translator frame update
   updateSelectionTranslatorFrame();
 
   // 2. Dispatch messages -> AI commands
@@ -70,20 +75,31 @@ export function updateGameSystems(dt) {
     state.pathfinder.processPathfindQueue();
   }
 
-  // 4. Update each unit's AI (state machine + locomotor)
+  // 4. Physics collision detection + force application
+  // Mirrors PhysicsUpdate: detects overlap, calls processCollision,
+  // applies separation force, sets m_isBlocked / m_blockedFrames
+  resolvePhysicsCollisions();
+
+  // 5. AI update: doLocomotor reads blocked state, drives locomotor
+  // Mirrors AIUpdateInterface::update -> doLocomotor
   for (const unit of state.units.values()) {
     if (unit.ai) {
+      // Mirrors doLocomotor frame start: increment/reset blockedFrames
+      if (unit.ai.isBlocked) {
+        unit.ai.blockedFrames++;
+      } else {
+        unit.ai.blockedFrames = 0;
+      }
+      unit.ai.isBlocked = false;  // Reset per frame (set again by physics if still blocked)
+
       unit.ai.update(dt);
     }
   }
 
-  // 5. Update selection indicators to follow units
+  // 6. Update selection indicators to follow units
   updateSelectionIndicators();
 }
 
-/**
- * Reset game systems on map reload.
- */
 export function resetGameSystems() {
   initialized = false;
   state.messageStream = null;
