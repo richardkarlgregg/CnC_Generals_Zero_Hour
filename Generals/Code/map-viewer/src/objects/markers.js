@@ -23,7 +23,8 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
 
   const instanceLimit = 5000;
   const visibleObjects = objects.filter(o =>
-    !(o.flags & 0x100) && !(o.flags & FLAG_ROAD_FLAGS) && !(o.flags & FLAG_BRIDGE_FLAGS)
+    !(o.flags & 0x100) && !(o.flags & FLAG_ROAD_FLAGS) && !(o.flags & FLAG_BRIDGE_FLAGS) &&
+    !o.name.startsWith('*')
   ).slice(0, instanceLimit);
 
   let loadedCount = 0, fallbackCount = 0;

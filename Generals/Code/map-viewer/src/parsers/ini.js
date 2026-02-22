@@ -7,6 +7,7 @@ export const roadTypeMap = new Map();
 
 export function parseObjectINIsFromPool() {
   objectModelMap.clear();
+  objectKindOfMap.clear();
   const candidates = [];
   for (const [path] of bigFilePool) {
     if ((path.startsWith('data/ini/') && path.endsWith('.ini')) ||
@@ -15,15 +16,22 @@ export function parseObjectINIsFromPool() {
     }
   }
   candidates.sort();
+  console.groupCollapsed(`Object INI: scanning ${candidates.length} INI files`);
   for (const path of candidates) {
     const entry = bigFilePool.get(path);
     if (!entry) continue;
+    const before = objectModelMap.size;
     try {
       const bytes = new Uint8Array(entry.buffer, entry.offset, entry.size);
       const text = new TextDecoder('ascii').decode(bytes);
       parseObjectINI(text);
-    } catch (e) { /* skip unparseable files */ }
+      const added = objectModelMap.size - before;
+      if (added > 0) console.log(`  ${path}: +${added} mappings`);
+    } catch (e) {
+      console.warn(`  ${path}: PARSE ERROR`, e);
+    }
   }
+  console.groupEnd();
   console.log(`Object INI: ${objectModelMap.size} object→model mappings, ${objectKindOfMap.size} KindOf entries`);
 }
 
@@ -36,7 +44,7 @@ function parseObjectINI(text) {
     const line = raw.replace(/;.*$/, '').replace(/\/\/.*$/, '').trim();
     if (!line) continue;
 
-    const objMatch = line.match(/^Object\s+(\S+)/i);
+    const objMatch = line.match(/^(?:Object|ObjectReskin)\s+(\S+)/i);
     if (objMatch) {
       currentObject = objMatch[1].toLowerCase();
       inDrawModule = false;
