@@ -61,12 +61,16 @@ function w3dMeshToThreeJS(w3dMesh) {
           vertexColors: hasVertexColors,
         });
       } else {
-        const hasAlpha = texName.toLowerCase().includes('alpha') ||
-                         texName.toLowerCase().includes('tree') ||
-                         texName.toLowerCase().includes('bush') ||
-                         texName.toLowerCase().includes('shrub');
+        const shader = w3dMesh.shaders && w3dMesh.shaders[0];
+        const shaderAlphaTest = shader && shader.alphaTest === 1;
+        const shaderAlphaBlend = shader && shader.srcBlend === 2 && shader.destBlend === 5;
+        const needsAlpha = shaderAlphaTest || shaderAlphaBlend;
         material = new THREE.MeshLambertMaterial({
-          map: tex, transparent: hasAlpha, alphaTest: hasAlpha ? 0.3 : 0,
+          map: tex,
+          transparent: needsAlpha,
+          alphaTest: shaderAlphaTest ? 0.376 : 0,
+          depthWrite: shader ? shader.depthMask !== 0 : true,
+          side: needsAlpha ? THREE.DoubleSide : THREE.FrontSide,
           vertexColors: hasVertexColors,
         });
       }

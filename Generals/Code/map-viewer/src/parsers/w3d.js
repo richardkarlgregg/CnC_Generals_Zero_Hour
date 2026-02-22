@@ -8,6 +8,7 @@ export const W3D_CHUNK_TEXTURE        = 0x00000031;
 export const W3D_CHUNK_TEXTURE_NAME   = 0x00000032;
 export const W3D_CHUNK_MATERIAL_PASS  = 0x00000038;
 export const W3D_CHUNK_VERTEX_MATERIAL_IDS = 0x00000039;
+export const W3D_CHUNK_SHADERS       = 0x00000029;
 export const W3D_CHUNK_SHADER_IDS    = 0x0000003A;
 export const W3D_CHUNK_DCG           = 0x0000003B;
 export const W3D_CHUNK_TEXTURE_STAGE  = 0x00000048;
@@ -73,6 +74,7 @@ export function parseW3D(buffer) {
       uvs: null, vertexColors: null,
       textureNames: [], numVerts: 0, numTris: 0,
       boneLinks: null,
+      shaders: null,
     };
 
     function parseTextures(tStart, tEnd) {
@@ -174,6 +176,20 @@ export function parseW3D(buffer) {
           mesh.boneLinks = new Uint16Array(count);
           for (let i = 0; i < count; i++) {
             mesh.boneLinks[i] = view.getUint16(dStart + i * 8, true);
+          }
+          break;
+        }
+        case W3D_CHUNK_SHADERS: {
+          const count = Math.floor(size / 16);
+          mesh.shaders = [];
+          for (let i = 0; i < count; i++) {
+            const off = dStart + i * 16;
+            mesh.shaders.push({
+              depthMask:  view.getUint8(off + 1),
+              destBlend:  view.getUint8(off + 3),
+              srcBlend:   view.getUint8(off + 7),
+              alphaTest:  view.getUint8(off + 12),
+            });
           }
           break;
         }
