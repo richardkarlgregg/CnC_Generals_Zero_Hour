@@ -19,6 +19,14 @@ export const W3D_CHUNK_MATERIAL_INFO  = 0x00000028;
 export const W3D_CHUNK_HIERARCHY      = 0x00000100;
 export const W3D_CHUNK_HIERARCHY_HEADER=0x00000101;
 export const W3D_CHUNK_PIVOTS         = 0x00000102;
+export const W3D_CHUNK_ANIMATION = 0x00000200;
+export const W3D_CHUNK_ANIMATION_HEADER = 0x00000201;
+export const W3D_CHUNK_ANIMATION_CHANNEL = 0x00000202;
+export const W3D_CHUNK_BIT_CHANNEL = 0x00000203;
+export const W3D_CHUNK_COMPRESSED_ANIMATION = 0x00000280;
+export const W3D_CHUNK_COMPRESSED_ANIMATION_HEADER = 0x00000281;
+export const W3D_CHUNK_COMPRESSED_ANIMATION_CHANNEL = 0x00000282;
+export const W3D_CHUNK_COMPRESSED_BIT_CHANNEL = 0x00000283;
 export const W3D_CHUNK_HLOD           = 0x00000700;
 export const W3D_CHUNK_HLOD_HEADER    = 0x00000701;
 export const W3D_CHUNK_HLOD_LOD_ARRAY = 0x00000702;
@@ -40,11 +48,21 @@ export const W3D_MESH_FLAG_GEOMETRY_TYPE_MASK = 0x00FF0000;
 export const W3D_MESH_FLAG_GEOMETRY_TYPE_SKIN = 0x00020000;
 export const W3D_MESH_FLAG_SKIN_LEGACY       = 0x00000002;
 
+export const ANIM_CHANNEL_X = 0;
+export const ANIM_CHANNEL_Y = 1;
+export const ANIM_CHANNEL_Z = 2;
+export const ANIM_CHANNEL_XR = 3;
+export const ANIM_CHANNEL_YR = 4;
+export const ANIM_CHANNEL_ZR = 5;
+export const ANIM_CHANNEL_Q = 6;
+
 export function parseW3D(buffer) {
   const view = new DataView(buffer);
   const meshes = [];
   let hierarchy = null;
   let hlod = null;
+  const animations = [];
+  const compressedAnimations = [];
 
   function iterChunks(start, end, handler) {
     let pos = start;
@@ -72,6 +90,7 @@ export function parseW3D(buffer) {
   function parseMeshChunk(start, end) {
     const mesh = {
       name: '', attrs: 0,
+      hierarchyModelName: '',
       vertices: null, normals: null, triangles: null,
       uvs: null, vertexColors: null,
       textureNames: [], numVerts: 0, numTris: 0,
@@ -139,6 +158,7 @@ export function parseW3D(buffer) {
         case W3D_CHUNK_MESH_HEADER3: {
           mesh.attrs = view.getUint32(dStart + 4, true);
           mesh.name = readString(dStart + 8, 16);
+          mesh.hierarchyModelName = readString(dStart + 24, 16);
           mesh.numTris = view.getUint32(dStart + 40, true);
           mesh.numVerts = view.getUint32(dStart + 44, true);
           break;
@@ -254,15 +274,101 @@ export function parseW3D(buffer) {
     return hlod;
   }
 
+  function parseAnimation(start, end) {
+    const anim = {
+      key: '',
+      name: '',
+      hierarchyName: '',
+      version: 0,
+      numFrames: 0,
+      frameRate: 0,
+      channels: [],
+      bitChannels: [],
+      compressed: false,
+    };
+
+    iterChunks(start, end, (id, dStart, dEnd, size) => {
+      if (id === W3D_CHUNK_ANIMATION_HEADER && size >= 44) {
+        anim.version = view.getUint32(dStart, true);
+        anim.name = readString(dStart + 4, 16);
+        anim.hierarchyName = readString(dStart + 20, 16);
+        anim.numFrames = view.getUint32(dStart + 36, true);
+        anim.frameRate = view.getUint32(dStart + 40, true);
+        anim.key = `${anim.hierarchyName}.${anim.name}`.toLowerCase();
+      } else if (id === W3D_CHUNK_ANIMATION_CHANNEL && size >= 12) {
+        const firstFrame = view.getUint16(dStart, true);
+        const lastFrame = view.getUint16(dStart + 2, true);
+        const vectorLen = view.getUint16(dStart + 4, true);
+        const flags = view.getUint16(dStart + 6, true);
+        const pivot = view.getUint16(dStart + 8, true);
+        const samples = Math.max(0, lastFrame - firstFrame + 1);
+        const expected = samples * vectorLen;
+        const floatsAvailable = Math.floor(Math.max(0, size - 12) / 4);
+        const count = Math.min(expected, floatsAvailable);
+        const data = new Float32Array(count);
+        for (let i = 0; i < count; i++) {
+          data[i] = view.getFloat32(dStart + 12 + i * 4, true);
+        }
+        anim.channels.push({ firstFrame, lastFrame, vectorLen, flags, pivot, data });
+      } else if (id === W3D_CHUNK_BIT_CHANNEL && size >= 9) {
+        const firstFrame = view.getUint16(dStart, true);
+        const lastFrame = view.getUint16(dStart + 2, true);
+        const flags = view.getUint16(dStart + 4, true);
+        const pivot = view.getUint16(dStart + 6, true);
+        const defaultVal = view.getUint8(dStart + 8);
+        const byteLen = Math.max(0, size - 9);
+        const bits = new Uint8Array(byteLen);
+        for (let i = 0; i < byteLen; i++) bits[i] = view.getUint8(dStart + 9 + i);
+        anim.bitChannels.push({ firstFrame, lastFrame, flags, pivot, defaultVal, bits });
+      }
+    });
+    // Mirrors HRawAnimClass::Load_W3D pre-3.0 behavior:
+    // versions before 3.0 shift all channel pivots by +1.
+    if (anim.version !== 0 && anim.version < 0x00030000) {
+      for (const ch of anim.channels) ch.pivot += 1;
+      for (const ch of anim.bitChannels) ch.pivot += 1;
+    }
+    if (anim.key) animations.push(anim);
+  }
+
+  function parseCompressedAnimation(start, end) {
+    const anim = {
+      key: '',
+      name: '',
+      hierarchyName: '',
+      version: 0,
+      numFrames: 0,
+      frameRate: 0,
+      flavor: 0,
+      compressed: true,
+    };
+    iterChunks(start, end, (id, dStart, _dEnd, size) => {
+      if (id === W3D_CHUNK_COMPRESSED_ANIMATION_HEADER && size >= 44) {
+        anim.version = view.getUint32(dStart, true);
+        anim.name = readString(dStart + 4, 16);
+        anim.hierarchyName = readString(dStart + 20, 16);
+        anim.numFrames = view.getUint32(dStart + 36, true);
+        anim.frameRate = view.getUint16(dStart + 40, true);
+        anim.flavor = view.getUint16(dStart + 42, true);
+        anim.key = `${anim.hierarchyName}.${anim.name}`.toLowerCase();
+      }
+    });
+    if (anim.key) compressedAnimations.push(anim);
+  }
+
   iterChunks(0, buffer.byteLength, (id, dStart, dEnd) => {
     if (id === W3D_CHUNK_MESH) {
       meshes.push(parseMeshChunk(dStart, dEnd));
     } else if (id === W3D_CHUNK_HIERARCHY) {
       hierarchy = parseHierarchy(dStart, dEnd);
+    } else if (id === W3D_CHUNK_ANIMATION) {
+      parseAnimation(dStart, dEnd);
+    } else if (id === W3D_CHUNK_COMPRESSED_ANIMATION) {
+      parseCompressedAnimation(dStart, dEnd);
     } else if (id === W3D_CHUNK_HLOD) {
       hlod = parseHLod(dStart, dEnd);
     }
   });
 
-  return { meshes, hierarchy, hlod };
+  return { meshes, hierarchy, hlod, animations, compressedAnimations };
 }

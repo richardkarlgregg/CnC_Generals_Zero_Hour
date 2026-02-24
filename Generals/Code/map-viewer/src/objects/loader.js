@@ -9,8 +9,11 @@ import { w3dFileIndex } from './index.js';
 
 export const w3dModelCache = new Map();
 export const w3dTextureCache = new Map();
+export const w3dAnimationCache = new Map();
+const ENABLE_SKINNED_MESHES = false;
+const DEBUG_ANIM = true;
 
-function w3dMeshToThreeJS(w3dMesh) {
+function buildW3DMeshGeometryAndMaterial(w3dMesh) {
   if (!w3dMesh.vertices || !w3dMesh.triangles) return null;
 
   const geo = new THREE.BufferGeometry();
@@ -93,9 +96,7 @@ function w3dMeshToThreeJS(w3dMesh) {
     }
   }
 
-  const mesh = new THREE.Mesh(geo, material);
-  mesh.userData.isPrelitUnlit = isPrelitUnlit;
-  return mesh;
+  return { geo, material, isPrelitUnlit };
 }
 
 function loadW3DTexture(name) {
@@ -124,6 +125,9 @@ export function loadW3DModel(w3dPath) {
   try {
     const w3d = parseW3D(entry.buffer.slice(entry.offset, entry.offset + entry.size));
     if (w3d.meshes.length === 0) { w3dModelCache.set(key, null); return null; }
+    if (DEBUG_ANIM && (key.includes('cmdo-skin') || key.includes('skeleton'))) {
+      console.log(`[ANIM] loadW3DModel ${w3dPath}: meshes=${w3d.meshes.length}, hierarchy=${w3d.hierarchy?.name || 'none'}, hlodHierarchy=${w3d.hlod?.hierarchy || 'none'}`);
+    }
 
     if (!w3d.hierarchy && w3d.hlod && w3d.hlod.hierarchy) {
       const skelName = w3d.hlod.hierarchy.toLowerCase();
@@ -135,8 +139,31 @@ export function loadW3DModel(w3dPath) {
             const skelW3D = parseW3D(skelEntry.buffer.slice(skelEntry.offset, skelEntry.offset + skelEntry.size));
             if (skelW3D.hierarchy) {
               w3d.hierarchy = skelW3D.hierarchy;
+              if (DEBUG_ANIM) {
+                console.log(`[ANIM] hierarchy resolved from HLOD "${w3d.hlod.hierarchy}" via ${skelPath}`);
+              }
             }
           } catch (e) { /* skip */ }
+        }
+      }
+    }
+    if (!w3d.hierarchy) {
+      const hintedHierarchy = w3d.meshes.find(m => m.hierarchyModelName)?.hierarchyModelName;
+      if (hintedHierarchy) {
+        const hintedPath = w3dFileIndex.get(hintedHierarchy.toLowerCase());
+        if (hintedPath) {
+          const hintedEntry = getFileFromPool(hintedPath);
+          if (hintedEntry) {
+            try {
+              const hintedW3D = parseW3D(hintedEntry.buffer.slice(hintedEntry.offset, hintedEntry.offset + hintedEntry.size));
+              if (hintedW3D.hierarchy) {
+                w3d.hierarchy = hintedW3D.hierarchy;
+                if (DEBUG_ANIM) {
+                  console.log(`[ANIM] hierarchy resolved from mesh header "${hintedHierarchy}" via ${hintedPath}`);
+                }
+              }
+            } catch { /* ignore */ }
+          }
         }
       }
     }
@@ -158,15 +185,23 @@ export function loadW3DModel(w3dPath) {
     if (w3d.hierarchy && w3d.hierarchy.pivots.length > 0) {
       for (let i = 0; i < w3d.hierarchy.pivots.length; i++) {
         const p = w3d.hierarchy.pivots[i];
-        const node = new THREE.Object3D();
+        const node = new THREE.Bone();
         node.name = p.name;
-        if (i > 0) {
+        node.userData.pivotIndex = i;
+        if (i === 0) {
+          // Mirrors Generals HTreeClass::Base_Update / Anim_Update:
+          // pivot 0 is set from object root transform, not from pivot base.
+          node.position.set(0, 0, 0);
+          node.quaternion.identity();
+        } else {
           node.position.set(p.translation[0], p.translation[1], p.translation[2]);
           const q = p.rotation;
           if (q[0] !== 0 || q[1] !== 0 || q[2] !== 0 || q[3] !== 1) {
             node.quaternion.set(q[0], q[1], q[2], q[3]);
           }
         }
+        node.userData.bindPosition = node.position.clone();
+        node.userData.bindQuaternion = node.quaternion.clone();
         boneNodes.push(node);
       }
       for (let i = 0; i < w3d.hierarchy.pivots.length; i++) {
@@ -179,6 +214,7 @@ export function loadW3DModel(w3dPath) {
       }
     }
 
+    // Precompute bind-pose world matrices for safe fallback rendering of skin meshes.
     const boneMats = [];
     if (w3d.hierarchy) {
       for (let i = 0; i < w3d.hierarchy.pivots.length; i++) {
@@ -214,40 +250,73 @@ export function loadW3DModel(w3dPath) {
       const isSkin = m.boneLinks && m.boneLinks.length > 0 &&
         ((m.attrs & W3D_MESH_FLAG_GEOMETRY_TYPE_MASK) === W3D_MESH_FLAG_GEOMETRY_TYPE_SKIN ||
          (m.attrs & W3D_MESH_FLAG_SKIN_LEGACY));
-      if (isSkin && boneMats.length > 0) {
-        const verts = m.vertices;
-        const norms = m.normals;
-        const links = m.boneLinks;
-        const tmpV = new THREE.Vector3();
-        const tmpN = new THREE.Vector3();
-        const normMat = new THREE.Matrix3();
-        for (let vi = 0; vi < links.length && vi * 3 + 2 < verts.length; vi++) {
-          const bi = links[vi];
-          if (bi < boneMats.length) {
-            tmpV.set(verts[vi*3], verts[vi*3+1], verts[vi*3+2]);
-            tmpV.applyMatrix4(boneMats[bi]);
-            verts[vi*3] = tmpV.x; verts[vi*3+1] = tmpV.y; verts[vi*3+2] = tmpV.z;
-            if (norms) {
-              normMat.getNormalMatrix(boneMats[bi]);
-              tmpN.set(norms[vi*3], norms[vi*3+1], norms[vi*3+2]);
-              tmpN.applyMatrix3(normMat).normalize();
-              norms[vi*3] = tmpN.x; norms[vi*3+1] = tmpN.y; norms[vi*3+2] = tmpN.z;
-            }
-          }
-        }
-      }
 
       const isLightMesh = mname.includes('light') || mname.includes('glow') ||
                           mname.includes('muzzle') || mname.includes('fxfire') ||
                           mname.includes('flame') || mname.includes('beacon');
-      const mesh = w3dMeshToThreeJS(m);
-      if (mesh) {
+      const built = buildW3DMeshGeometryAndMaterial(m);
+      if (built) {
+        let mesh;
+        if (isSkin && boneNodes.length > 0 && ENABLE_SKINNED_MESHES) {
+          const vertexCount = built.geo.getAttribute('position').count;
+          const links = m.boneLinks || [];
+          const skinIndices = new Uint16Array(vertexCount * 4);
+          const skinWeights = new Float32Array(vertexCount * 4);
+          for (let vi = 0; vi < vertexCount; vi++) {
+            const bi = vi < links.length ? links[vi] : 0;
+            skinIndices[vi * 4] = bi < boneNodes.length ? bi : 0;
+            skinWeights[vi * 4] = 1.0;
+          }
+          built.geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skinIndices, 4));
+          built.geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skinWeights, 4));
+
+          const skinMat = built.material.clone();
+          skinMat.skinning = true;
+          mesh = new THREE.SkinnedMesh(built.geo, skinMat);
+          const skeleton = new THREE.Skeleton(boneNodes);
+          // Infantry assets often use external hierarchy + skin files.
+          // Detached bind keeps skeleton world-space independent of mesh parent,
+          // which matches this split-asset setup.
+          mesh.bindMode = 'detached';
+          mesh.bind(skeleton, new THREE.Matrix4());
+          mesh.userData.hasSkeleton = true;
+        } else {
+          // Safe fallback for non-animated skin meshes without hierarchy.
+          // If we do have bones (CPU skin runtime), keep original bind vertices.
+          if (isSkin && boneNodes.length === 0 && boneMats.length > 0) {
+            const posAttr = built.geo.getAttribute('position');
+            const normAttr = built.geo.getAttribute('normal');
+            const links = m.boneLinks || [];
+            const tmpV = new THREE.Vector3();
+            const tmpN = new THREE.Vector3();
+            const normalMat = new THREE.Matrix3();
+            for (let vi = 0; vi < posAttr.count; vi++) {
+              const bi = vi < links.length ? links[vi] : 0;
+              if (bi < boneMats.length) {
+                tmpV.fromBufferAttribute(posAttr, vi).applyMatrix4(boneMats[bi]);
+                posAttr.setXYZ(vi, tmpV.x, tmpV.y, tmpV.z);
+                if (normAttr) {
+                  normalMat.getNormalMatrix(boneMats[bi]);
+                  tmpN.fromBufferAttribute(normAttr, vi).applyMatrix3(normalMat).normalize();
+                  normAttr.setXYZ(vi, tmpN.x, tmpN.y, tmpN.z);
+                }
+              }
+            }
+            posAttr.needsUpdate = true;
+            if (normAttr) normAttr.needsUpdate = true;
+            built.geo.computeBoundingSphere();
+          }
+          mesh = new THREE.Mesh(built.geo, built.material);
+        }
+
+        mesh.userData.isPrelitUnlit = built.isPrelitUnlit;
         mesh.castShadow = !isLightMesh && !mesh.userData.isPrelitUnlit;
         mesh.receiveShadow = !isLightMesh;
         mesh.userData.isLightMesh = isLightMesh;
         if (isLightMesh) mesh.renderOrder = 100;
 
         if (isSkin) {
+          mesh.userData.cpuSkinTemplate = { links: Uint16Array.from(m.boneLinks || []) };
           innerGroup.add(mesh);
         } else {
           const boneIdx = meshPivotIdx.get(mname);
@@ -263,13 +332,90 @@ export function loadW3DModel(w3dPath) {
 
     const group = new THREE.Group();
     group.add(innerGroup);
+    group.userData.w3dHierarchyName = w3d.hierarchy?.name?.toLowerCase() || null;
 
     const result = meshCount > 0 ? group : null;
+    if (DEBUG_ANIM && (key.includes('cmdo-skin') || key.includes('skeleton'))) {
+      console.log(`[ANIM] model built ${w3dPath}: meshCount=${meshCount}, bones=${boneNodes.length}, hasHierarchy=${!!w3d.hierarchy}`);
+    }
     w3dModelCache.set(key, result);
     return result;
   } catch (e) {
     console.warn('Failed to parse W3D:', w3dPath, e);
     w3dModelCache.set(key, null);
+    return null;
+  }
+}
+
+export function loadW3DAnimationClip(animationToken) {
+  if (!animationToken) return null;
+  const key = animationToken.toLowerCase();
+  if (w3dAnimationCache.has(key)) return w3dAnimationCache.get(key);
+
+  const parts = key.split('.');
+  if (parts.length < 2) {
+    w3dAnimationCache.set(key, null);
+    return null;
+  }
+
+  // Mirrors Generals WW3DAssetManager::Get_HAnim:
+  // for "HierarchyName.AnimName", load "<AnimName>.w3d" on demand.
+  const animName = parts.slice(1).join('.');
+  let w3dPath = w3dFileIndex.get(animName);
+  if (!w3dPath) {
+    // Fallback for non-standard assets: try hierarchy container as well.
+    const animContainerName = parts[0];
+    w3dPath = w3dFileIndex.get(animContainerName);
+  }
+  if (!w3dPath) {
+    w3dAnimationCache.set(key, null);
+    if (DEBUG_ANIM) {
+      console.warn(`[ANIM] clip not found in index for token "${animationToken}" (animName="${animName}")`);
+    }
+    return null;
+  }
+
+  const entry = getFileFromPool(w3dPath);
+  if (!entry) {
+    w3dAnimationCache.set(key, null);
+    if (DEBUG_ANIM) {
+      console.warn(`[ANIM] clip file missing in pool for token "${animationToken}" path="${w3dPath}"`);
+    }
+    return null;
+  }
+
+  try {
+    const parsed = parseW3D(entry.buffer.slice(entry.offset, entry.offset + entry.size));
+    if (parsed.animations && parsed.animations.length > 0) {
+      for (const anim of parsed.animations) {
+        if (anim.key) {
+          w3dAnimationCache.set(anim.key.toLowerCase(), anim);
+        }
+      }
+    }
+    if (parsed.compressedAnimations && parsed.compressedAnimations.length > 0) {
+      for (const anim of parsed.compressedAnimations) {
+        if (anim.key && !w3dAnimationCache.has(anim.key.toLowerCase())) {
+          w3dAnimationCache.set(anim.key.toLowerCase(), null);
+        }
+      }
+    }
+    if (!w3dAnimationCache.has(key)) {
+      w3dAnimationCache.set(key, null);
+    }
+    if (DEBUG_ANIM && (key.includes('skeleton.') || key.includes('uirgrd_'))) {
+      const hit = w3dAnimationCache.get(key);
+      console.log(`[ANIM] token "${animationToken}" -> ${w3dPath}, parsedAnims=${parsed.animations?.length || 0}, clipResolved=${!!hit}`);
+      if (hit) {
+        console.log(`[ANIM] clip details ${hit.key}: frames=${hit.numFrames}, fps=${hit.frameRate}, channels=${hit.channels?.length || 0}`);
+      }
+    }
+    return w3dAnimationCache.get(key);
+  } catch {
+    w3dAnimationCache.set(key, null);
+    if (DEBUG_ANIM) {
+      console.warn(`[ANIM] failed parsing animation file for token "${animationToken}" path="${w3dPath}"`);
+    }
     return null;
   }
 }

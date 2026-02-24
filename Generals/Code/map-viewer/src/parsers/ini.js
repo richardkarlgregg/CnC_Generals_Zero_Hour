@@ -4,6 +4,7 @@ import { DEFAULT_ROAD_SCALE } from '../constants.js';
 export const objectModelMap = new Map();
 export const objectKindOfMap = new Map();
 export const objectGeometryMap = new Map();
+export const objectDrawStatesMap = new Map();
 export const roadTypeMap = new Map();
 
 // ---------------------------------------------------------------------------
@@ -58,6 +59,7 @@ export function parseObjectINIsFromPool() {
   objectModelMap.clear();
   objectKindOfMap.clear();
   objectGeometryMap.clear();
+  objectDrawStatesMap.clear();
   const candidates = [];
   for (const [path] of bigFilePool) {
     if (path.endsWith('.ini')) {
@@ -81,7 +83,7 @@ export function parseObjectINIsFromPool() {
     }
   }
   console.groupEnd();
-  console.log(`Object INI: ${objectModelMap.size} object→model mappings, ${objectKindOfMap.size} KindOf entries, ${objectGeometryMap.size} GeometryInfo entries`);
+  console.log(`Object INI: ${objectModelMap.size} object→model mappings, ${objectKindOfMap.size} KindOf entries, ${objectGeometryMap.size} GeometryInfo entries, ${objectDrawStatesMap.size} draw-state entries`);
 
   console.groupCollapsed(`KindOf sample (first 30 of ${objectKindOfMap.size})`);
   let sampleCount = 0;
@@ -235,10 +237,21 @@ function parseObjectBlock(objectName, nextLine) {
     // Reads module name + tag, then module's createDataProc → initFromINI
     // We parse W3D draws for model names; skip non-W3D draws.
     if (field === 'draw') {
+      let drawData = null;
       if (/^W3D/i.test(values[0] || '')) {
-        parseW3DDrawBlock(objectName, nextLine);
+        drawData = parseW3DDrawBlock(objectName, nextLine);
       } else {
         skipBlock(nextLine);
+      }
+      if (drawData && drawData.states.length > 0) {
+        objectDrawStatesMap.set(objectName, drawData);
+        // Mirror findBestInfo(emptyFlags): choose best "idle/default" state model.
+        if (!objectModelMap.has(objectName)) {
+          const idleState = findBestStateForFlags(drawData.states, new Set());
+          if (idleState?.model) {
+            objectModelMap.set(objectName, idleState.model.toLowerCase());
+          }
+        }
       }
       continue;
     }
@@ -274,6 +287,8 @@ function parseObjectBlock(objectName, nextLine) {
 //   All other fields      → simple single-line
 // ---------------------------------------------------------------------------
 function parseW3DDrawBlock(objectName, nextLine) {
+  const states = [];
+  let lastConcreteState = null;
   let line;
   while ((line = nextLine()) !== null) {
     const tokens = tokenize(line);
@@ -281,11 +296,29 @@ function parseW3DDrawBlock(objectName, nextLine) {
     const field = tokens[0].toLowerCase();
     const values = tokens.slice(1);
 
-    if (field === 'end') return;
+    if (field === 'end') return { states };
 
     // ConditionState / TransitionState / DefaultConditionState — blocks with END
     if (DRAW_BLOCK_FIELDS.has(field)) {
-      parseConditionStateBlock(objectName, nextLine);
+      const stateInfo = parseConditionStateBlock(objectName, nextLine, field, values);
+      if (stateInfo) {
+        states.push(stateInfo);
+        if (field !== 'transitionstate') {
+          lastConcreteState = stateInfo;
+        }
+      }
+      continue;
+    }
+
+    // AliasConditionState = <flags...>
+    // Mirrors parseConditionState(PARSE_ALIAS): same payload as previous state,
+    // different condition bits.
+    if (field === 'aliasconditionstate' && lastConcreteState) {
+      const aliasState = {
+        ...lastConcreteState,
+        conditions: new Set(values.map(v => v.toUpperCase())),
+      };
+      states.push(aliasState);
       continue;
     }
 
@@ -305,7 +338,26 @@ function parseW3DDrawBlock(objectName, nextLine) {
 // Key field: { "Model", parseAsciiStringLC, ... }
 // All fields in a ConditionState are simple single-line fields.
 // ---------------------------------------------------------------------------
-function parseConditionStateBlock(objectName, nextLine) {
+function parseConditionStateBlock(objectName, nextLine, stateType, stateHeaderValues) {
+  const state = {
+    type: stateType,
+    conditions: new Set(stateType === 'defaultconditionstate'
+      ? []
+      : stateHeaderValues.map(v => v.toUpperCase())),
+    model: null,
+    animation: null,
+    idleAnimation: null,
+    animationMode: null,
+    flags: new Set(),
+    transitionFrom: null,
+    transitionTo: null,
+  };
+
+  if (stateType === 'transitionstate') {
+    state.transitionFrom = stateHeaderValues[0] || null;
+    state.transitionTo = stateHeaderValues[1] || null;
+  }
+
   let line;
   while ((line = nextLine()) !== null) {
     const tokens = tokenize(line);
@@ -313,13 +365,63 @@ function parseConditionStateBlock(objectName, nextLine) {
     const field = tokens[0].toLowerCase();
     const values = tokens.slice(1);
 
-    if (field === 'end') return;
+    if (field === 'end') return state;
 
     // Model/ModelName — parseAsciiStringLC (W3DModelDraw.cpp:1160-1165)
     if ((field === 'model' || field === 'modelname') && values[0] && !objectModelMap.has(objectName)) {
       objectModelMap.set(objectName, values[0].toLowerCase());
     }
+    if ((field === 'model' || field === 'modelname') && values[0]) {
+      state.model = values[0].toLowerCase();
+      continue;
+    }
+    if (field === 'animation' && values[0]) {
+      state.animation = values[0];
+      continue;
+    }
+    if (field === 'idleanimation' && values[0]) {
+      state.idleAnimation = values[0];
+      continue;
+    }
+    if (field === 'animationmode' && values[0]) {
+      state.animationMode = values[0].toUpperCase();
+      continue;
+    }
+    if (field === 'flags' && values.length > 0) {
+      state.flags = new Set(values.map(v => v.toUpperCase()));
+      continue;
+    }
   }
+
+  return state;
+}
+
+// Approximate SparseMatchFinder::findBestInfo for condition-state matching:
+// maximize number of required flags satisfied, then minimize extraneous flags.
+export function findBestStateForFlags(states, activeFlags) {
+  if (!states || states.length === 0) return null;
+  let best = null;
+  let bestYes = -1;
+  let bestNo = Number.MAX_SAFE_INTEGER;
+  for (const state of states) {
+    let yes = 0;
+    let miss = 0;
+    for (const req of state.conditions) {
+      if (activeFlags.has(req)) yes++;
+      else miss++;
+    }
+    if (miss > 0) continue;
+    let no = 0;
+    for (const flag of activeFlags) {
+      if (!state.conditions.has(flag)) no++;
+    }
+    if (yes > bestYes || (yes === bestYes && no < bestNo)) {
+      bestYes = yes;
+      bestNo = no;
+      best = state;
+    }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------

@@ -21,6 +21,14 @@ function tryIndex(name) {
   return w3dFileIndex.has(name) ? w3dFileIndex.get(name) : null;
 }
 
+export function findW3DByModelName(modelName) {
+  if (!modelName) return null;
+  const baseName = modelName.toLowerCase().includes('.')
+    ? modelName.toLowerCase().split('.')[0]
+    : modelName.toLowerCase();
+  return tryIndex(baseName);
+}
+
 function stripTrailingDigits(s) {
   return s.replace(/\d+$/, '');
 }
