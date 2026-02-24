@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import state from '../state.js';
 import { MAP_XY_FACTOR, MAP_HEIGHT_SCALE, FLAG_ROAD_FLAGS, FLAG_BRIDGE_FLAGS } from '../constants.js';
 import { w3dFileIndex } from './index.js';
@@ -9,42 +8,6 @@ import { objectKindOfMap } from '../parsers/ini.js';
 import { getTerrainHeightAt } from '../terrain/update.js';
 import { updateLightMeshVisibility } from '../engine/lighting.js';
 import { Unit, resetUnitIdCounter } from '../engine/unit.js';
-import { initUnitDrawState } from '../engine/modelConditions.js';
-
-function initializeCpuSkinInstances(model) {
-  const bonesByPivot = new Map();
-  model.traverse(node => {
-    if (node.isBone && Number.isInteger(node.userData?.pivotIndex)) {
-      bonesByPivot.set(node.userData.pivotIndex, node);
-    }
-  });
-  if (bonesByPivot.size === 0) return;
-
-  model.updateMatrixWorld(true);
-  model.traverse(node => {
-    if (!node.isMesh) return;
-    const templateSkin = node.userData?.cpuSkinTemplate;
-    if (!templateSkin || !templateSkin.links) return;
-
-    node.geometry = node.geometry.clone();
-    const posAttr = node.geometry.getAttribute('position');
-    const normAttr = node.geometry.getAttribute('normal');
-    if (!posAttr) return;
-
-    const bindPositions = new Float32Array(posAttr.array);
-    const bindNormals = normAttr ? new Float32Array(normAttr.array) : null;
-    const links = templateSkin.links;
-
-    node.userData.cpuSkin = {
-      links,
-      bindPositions,
-      bindNormals,
-      bonesByPivot,
-      posAttr,
-      normAttr: normAttr || null,
-    };
-  });
-}
 
 export function buildObjectMarkers(objects, fullW, fullH, border) {
   if (!objects || objects.length === 0) return;
@@ -84,8 +47,7 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
       if (w3dPath) {
         const template = loadW3DModel(w3dPath);
         if (template) {
-          const model = cloneSkeleton(template);
-          initializeCpuSkinInstances(model);
+          const model = template.clone();
           model.position.set(wx, wy, wz);
           if (obj.angle) model.rotation.y = obj.angle;
           model.traverse(child => {
@@ -95,7 +57,6 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
           state.objectMarkers.add(model);
 
           const unit = new Unit(model, obj.name, kindOf);
-          initUnitDrawState(unit);
           state.units.set(unit.id, unit);
 
           loadedCount++;
@@ -125,7 +86,6 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
       state.objectMarkers.add(marker);
 
       const unit = new Unit(marker, obj.name, kindOf);
-      initUnitDrawState(unit);
       state.units.set(unit.id, unit);
 
       fallbackCount++;
