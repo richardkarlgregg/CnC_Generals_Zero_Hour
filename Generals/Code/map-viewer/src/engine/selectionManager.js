@@ -21,6 +21,7 @@ function ensureIndicatorResources() {
       transparent: true,
       opacity: 0.5,
       side: THREE.DoubleSide,
+      depthTest: true,
       depthWrite: false,
     });
   }
@@ -44,6 +45,7 @@ export function selectUnit(unit) {
 
   const ring = new THREE.Mesh(indicatorGeometry, indicatorMaterial);
   ring.position.set(unit.position.x, unit.position.y + 0.3, unit.position.z);
+  ring.renderOrder = 1000;
   ring.userData.unitId = unit.id;
   indicatorGroup.add(ring);
   unit.selectionIndicator = ring;
