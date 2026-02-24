@@ -21,8 +21,6 @@ import { Pathfinder } from '../logic/pathfinder.js';
 import { AIUpdate, setPathfinderRef } from '../logic/aiUpdate.js';
 import { resolvePhysicsCollisions } from '../logic/locomotor.js';
 import { getTerrainHeightAtWorld } from '../terrain/update.js';
-import { updateUnitDrawState } from './modelConditions.js';
-import { updateUnitAnimation } from './animationRuntime.js';
 
 let initialized = false;
 let debugOverlay = null;
@@ -107,8 +105,6 @@ export function updateGameSystems(dt) {
 
       unit.ai.update(dt);
     }
-    updateUnitDrawState(unit);
-    updateUnitAnimation(unit, dt);
   }
 
   // 6. Update selection indicators to follow units
