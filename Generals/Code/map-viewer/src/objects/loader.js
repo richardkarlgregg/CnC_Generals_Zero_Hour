@@ -16,6 +16,16 @@ function normalizeW3DPath(path) {
   return (path || '').toLowerCase().replace(/\\/g, '/');
 }
 
+function isRebelTraceEnabled() {
+  return globalThis.__w3dRebelTrace !== false;
+}
+
+function shouldTraceRebelByPath(path, hierarchyName = null) {
+  const p = normalizeW3DPath(path);
+  const h = (hierarchyName || '').toLowerCase();
+  return p.endsWith('/cmdo-skin.w3d') || h === 'skeleton';
+}
+
 function resolveW3DPathByName(baseName, preferredSourcePath = null) {
   const name = (baseName || '').toLowerCase().replace(/\.w3d$/, '');
   if (!name) return null;
@@ -138,6 +148,66 @@ function loadW3DTextureLuminanceAlpha(name) {
   return tex;
 }
 
+/**
+ * After cloning a model group, `cpuSkin.posAttr` / `cpuSkin.normAttr`
+ * still point to the template's BufferAttributes.  Three.js deep-clones
+ * the geometry (giving each clone its own attribute arrays) but shallow-copies
+ * userData, so we must relink the refs to the clone's own attributes.
+ */
+/**
+ * Three.js r147+ deep-copies userData via JSON.parse(JSON.stringify()) in
+ * Object3D.clone().  This destroys every typed array and every class instance
+ * stored there.  Call this once immediately after template.clone() to repair
+ * all userData fields that the skinning/animation system depends on.
+ */
+export function fixCpuSkinRefsAfterClone(clonedGroup) {
+  clonedGroup.traverse(node => {
+    // ── Bone nodes: restore bindPosition / bindQuaternion ──────────────────
+    // THREE.Vector3 survives JSON (uses .x/.y/.z), but THREE.Quaternion does
+    // NOT: it stores data as ._x/._y/._z/._w with getter aliases .x/.y/.z/.w.
+    // After JSON round-trip the getter aliases are gone, so .copy() reads
+    // undefined → NaN → NaN bone matrix → NaN vertex positions → invisible mesh.
+    if (Number.isInteger(node.userData?.pivotIndex)) {
+      if (!(node.userData.bindPosition instanceof THREE.Vector3)) {
+        node.userData.bindPosition = node.position.clone();
+      }
+      if (!(node.userData.bindQuaternion instanceof THREE.Quaternion)) {
+        node.userData.bindQuaternion = node.quaternion.clone();
+      }
+    }
+
+    // ── Skinned mesh nodes: relink BufferAttribute refs ────────────────────
+    if (!node.isMesh) return;
+    const skin = node.userData?.cpuSkin;
+    if (!skin) return;
+
+    // THREE.Mesh.copy() (used by .clone()) shares the geometry by reference,
+    // NOT by value.  Without this clone every instance deforms the same shared
+    // buffer, so unit N+1's bindPositions are snapshotted from unit N's
+    // already-deformed data → progressive corruption → mangled mesh.
+    node.geometry = node.geometry.clone();
+
+    const posAttr = node.geometry.getAttribute('position');
+    const normAttr = node.geometry.getAttribute('normal') || null;
+    skin.posAttr  = posAttr;
+    skin.normAttr = normAttr;
+    skin.bindPositions = Float32Array.from(posAttr.array);
+    skin.bindNormals   = normAttr ? Float32Array.from(normAttr.array) : null;
+
+    // Safety net: if links was a Uint16Array it becomes {"0":n,"1":n,...} with
+    // no .length after JSON round-trip.  Convert it back to a plain Array.
+    // (Primary fix: links is now stored as Array in loadW3DModel, but guard
+    //  against any path that still produces a non-array here.)
+    if (skin.links && !Array.isArray(skin.links)) {
+      const numericKeys = Object.keys(skin.links).filter(k => !isNaN(Number(k)));
+      const len = numericKeys.length > 0 ? Math.max(...numericKeys.map(Number)) + 1 : 0;
+      const arr = new Array(len);
+      for (let j = 0; j < len; j++) arr[j] = skin.links[j] ?? 0;
+      skin.links = arr;
+    }
+  });
+}
+
 export function loadW3DModel(w3dPath) {
   const key = normalizeW3DPath(w3dPath);
   if (w3dModelCache.has(key)) return w3dModelCache.get(key);
@@ -149,9 +219,11 @@ export function loadW3DModel(w3dPath) {
     const w3d = parseW3D(entry.buffer.slice(entry.offset, entry.offset + entry.size));
     if (w3d.meshes.length === 0) { w3dModelCache.set(key, null); return null; }
 
+    let resolvedSkeletonPath = null;
     if (!w3d.hierarchy && w3d.hlod && w3d.hlod.hierarchy) {
       const skelName = w3d.hlod.hierarchy.toLowerCase();
       const skelPath = resolveW3DPathByName(skelName, w3dPath);
+      resolvedSkeletonPath = skelPath || null;
       if (skelPath) {
         const skelEntry = getFileFromPool(skelPath);
         if (skelEntry) {
@@ -234,11 +306,14 @@ export function loadW3DModel(w3dPath) {
           const posAttr = mesh.geometry.getAttribute('position');
           const normAttr = mesh.geometry.getAttribute('normal');
           if (posAttr) {
-            const usedPivots = Array.from(new Set(m.boneLinks));
+            // Store links as a plain Array (not Uint16Array) so it survives
+          // Three.js's JSON.parse(JSON.stringify(userData)) clone deep-copy.
+          const linksArray = Array.from(m.boneLinks);
+          const usedPivots = Array.from(new Set(linksArray));
             mesh.userData.cpuSkin = {
               posAttr,
               normAttr: normAttr || null,
-              links: m.boneLinks,
+              links: linksArray,
               usedPivots,
               bindPositions: Float32Array.from(posAttr.array),
               bindNormals: normAttr ? Float32Array.from(normAttr.array) : null,
@@ -263,6 +338,22 @@ export function loadW3DModel(w3dPath) {
     const group = new THREE.Group();
     group.add(innerGroup);
     group.updateMatrixWorld(true);
+    group.userData = group.userData || {};
+    group.userData.w3dSource = key;
+    group.userData.skeletonW3D = resolvedSkeletonPath;
+    group.userData.hierarchyName = w3d.hlod?.hierarchy || null;
+    group.userData.hasHierarchy = !!w3d.hierarchy;
+    group.userData.boneCount = boneNodes.length;
+
+    if (isRebelTraceEnabled() && shouldTraceRebelByPath(w3dPath, w3d.hlod?.hierarchy)) {
+      let skinnedMeshes = 0;
+      group.traverse(node => {
+        if (node?.isMesh && node.userData?.cpuSkin) skinnedMeshes++;
+      });
+      console.log(
+        `[W3D REBEL TRACE] model=${key} hierarchy=${group.userData.hierarchyName || 'none'} skeleton=${resolvedSkeletonPath || 'none'} bones=${boneNodes.length} skinnedMeshes=${skinnedMeshes}`
+      );
+    }
 
     const result = meshCount > 0 ? group : null;
     w3dModelCache.set(key, result);
@@ -309,7 +400,8 @@ function loadAnimationFile(path) {
 export function loadW3DAnimationClip(token, preferredSourcePath = null) {
   const normalized = (token || '').toLowerCase();
   if (!normalized) return null;
-  const cacheKey = preferredSourcePath ? `${normalized}|${normalizeW3DPath(preferredSourcePath)}` : normalized;
+  const preferred = normalizeW3DPath(preferredSourcePath);
+  const cacheKey = preferred ? `${normalized}|${preferred}` : normalized;
   if (w3dAnimClipCache.has(cacheKey)) return w3dAnimClipCache.get(cacheKey);
 
   const { fileHint, clipName } = splitAnimToken(normalized);
@@ -319,9 +411,15 @@ export function loadW3DAnimationClip(token, preferredSourcePath = null) {
 
   let resolvedClip = null;
   let resolvedFrom = null;
+  const traceAnimResolve = isRebelTraceEnabled() && (preferred.endsWith('/cmdo-skin.w3d') || normalized.startsWith('skeleton.'));
 
   for (const base of candidateBases) {
     const path = resolveW3DPathByName(base, preferredSourcePath);
+    if (traceAnimResolve) {
+      console.log(
+        `[W3D REBEL TRACE] anim token="${normalized}" base="${base}" preferred="${preferred || 'none'}" resolvedPath="${path || 'NOT FOUND'}"`
+      );
+    }
     if (!path) continue;
     const parsed = loadAnimationFile(path);
     if (!parsed || !parsed.animations || parsed.animations.length === 0) continue;
@@ -341,8 +439,17 @@ export function loadW3DAnimationClip(token, preferredSourcePath = null) {
   }
 
   if (!resolvedClip) {
+    if (traceAnimResolve) {
+      console.log(`[W3D REBEL TRACE] final clip token="${normalized}" source=none clip=none`);
+    }
     w3dAnimClipCache.set(cacheKey, null);
     return null;
+  }
+
+  if (traceAnimResolve) {
+    console.log(
+      `[W3D REBEL TRACE] final clip token="${normalized}" source="${resolvedFrom}" clip="${resolvedClip.name}"`
+    );
   }
 
   if (globalThis.__w3dAnimDebug !== false) {

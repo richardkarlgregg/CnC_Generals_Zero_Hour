@@ -5,6 +5,7 @@ const _tmpQuatA = new THREE.Quaternion();
 const _tmpQuatB = new THREE.Quaternion();
 const _loggedAnimatorInfo = new Set();
 const _loggedClipInfo = new Set();
+const _loggedRebelSkinInfo = new Set();
 
 function isAnimDebugEnabled() {
   return globalThis.__w3dAnimDebug !== false;
@@ -13,6 +14,15 @@ function isAnimDebugEnabled() {
 function debug(unit, message) {
   if (!isAnimDebugEnabled() || !unit) return;
   console.log(`[W3D ANIM][${unit.id}:${unit.name}] ${message}`);
+}
+
+function isRebelTraceUnit(unit) {
+  if (!unit?.name) return false;
+  return unit.name.toLowerCase() === 'glainfantryrebel';
+}
+
+function isRebelTraceEnabled() {
+  return globalThis.__w3dRebelTrace !== false;
 }
 
 function getOrCreateAnimator(unit) {
@@ -147,8 +157,19 @@ function applyBindPoseToAnimator(animator) {
 }
 
 export function updateUnitAnimation(unit, dt) {
+  const isTrackedRebel = isRebelTraceEnabled() && isRebelTraceUnit(unit);
+
   // Skip non-skinned objects entirely (props/most map decorations).
-  if (!hasCpuSkinMeshes(unit)) return;
+  const hasSkin = hasCpuSkinMeshes(unit);
+  if (isTrackedRebel && !_loggedRebelSkinInfo.has(unit.id)) {
+    _loggedRebelSkinInfo.add(unit.id);
+    const modelPath = unit.mesh?.userData?.w3d || 'unknown';
+    const skeletonPath = unit.mesh?.userData?.skeletonW3D || 'none';
+    console.log(
+      `[W3D REBEL TRACE][${unit.id}:${unit.name}] model=${modelPath} skeleton=${skeletonPath} hasCpuSkin=${hasSkin}`
+    );
+  }
+  if (!hasSkin) return;
 
   const animator = getOrCreateAnimator(unit);
   if (!animator) return;
@@ -171,6 +192,11 @@ export function updateUnitAnimation(unit, dt) {
     animator.initialized = false;
     animator.completed = false;
     debug(unit, `clip switch token=${clipKey} resolved=${!!animator.clip}`);
+    if (isTrackedRebel) {
+      console.log(
+        `[W3D REBEL TRACE][${unit.id}:${unit.name}] clipToken=${clipKey} resolved=${!!animator.clip}`
+      );
+    }
   }
   if (!animator.clip) {
     console.warn(`[W3D ANIM][${unit.id}:${unit.name}] clip missing for token ${clipKey}`);
@@ -253,6 +279,7 @@ const _tmpMatC = new THREE.Matrix4();
 const _tmpMat3 = new THREE.Matrix3();
 const _tmpVec = new THREE.Vector3();
 const _tmpNorm = new THREE.Vector3();
+const _loggedSkinDump = new Set();
 
 function applyCpuSkin(unit, animator) {
   if (!unit?.mesh) return;
@@ -276,6 +303,23 @@ function applyCpuSkin(unit, animator) {
       // Generals infantry skins behave as bone-space vertices:
       // apply current bone transform in mesh space directly.
       deformByPivot[pivot] = Float32Array.from(_tmpMatB.elements);
+    }
+
+    // ── one-shot diagnostic for rebel units ──────────────────────────────
+    const dumpKey = `${unit.id}:${node.name || node.uuid}`;
+    if (isRebelTraceEnabled() && isRebelTraceUnit(unit) && !_loggedSkinDump.has(dumpKey)) {
+      _loggedSkinDump.add(dumpKey);
+      console.group(`[SKIN DUMP][${unit.id}:${unit.name}] mesh="${node.name}" verts=${pos.count} pivots=${skin.usedPivots?.length}`);
+      console.log('links type:', Array.isArray(links), 'len:', links?.length, 'first5:', links ? [...links].slice(0,5) : 'null');
+      console.log('bindPos[0..2]:', skin.bindPositions[0]?.toFixed(3), skin.bindPositions[1]?.toFixed(3), skin.bindPositions[2]?.toFixed(3));
+      for (const pivot of (skin.usedPivots || []).slice(0, 5)) {
+        const bone = animator.bonesByPivot.get(pivot);
+        const wpos = bone ? new THREE.Vector3().setFromMatrixPosition(bone.matrixWorld) : null;
+        const d = deformByPivot[pivot];
+        const dx = d ? d[12].toFixed(3) : '?', dy = d ? d[13].toFixed(3) : '?', dz = d ? d[14].toFixed(3) : '?';
+        console.log(`  pivot=${pivot} bone="${bone?.name}" worldPos=(${wpos?.x.toFixed(2)},${wpos?.y.toFixed(2)},${wpos?.z.toFixed(2)}) deform.t=(${dx},${dy},${dz})`);
+      }
+      console.groupEnd();
     }
 
     for (let i = 0; i < pos.count; i++) {

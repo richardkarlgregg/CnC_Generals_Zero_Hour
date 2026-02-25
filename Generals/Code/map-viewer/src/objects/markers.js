@@ -3,7 +3,7 @@ import state from '../state.js';
 import { MAP_XY_FACTOR, MAP_HEIGHT_SCALE, FLAG_ROAD_FLAGS, FLAG_BRIDGE_FLAGS } from '../constants.js';
 import { w3dFileIndex } from './index.js';
 import { findW3DForObject } from './index.js';
-import { loadW3DModel } from './loader.js';
+import { loadW3DModel, fixCpuSkinRefsAfterClone } from './loader.js';
 import { objectKindOfMap } from '../parsers/ini.js';
 import { getTerrainHeightAt } from '../terrain/update.js';
 import { updateLightMeshVisibility } from '../engine/lighting.js';
@@ -49,12 +49,13 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
         const template = loadW3DModel(w3dPath);
         if (template) {
           const model = template.clone();
+          fixCpuSkinRefsAfterClone(model);
           model.position.set(wx, wy, wz);
           if (obj.angle) model.rotation.y = obj.angle;
           model.traverse(child => {
             if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; }
           });
-          model.userData = { name: obj.name, w3d: w3dPath, kindOf: kindOf || null };
+          model.userData = { ...(model.userData || {}), name: obj.name, w3d: w3dPath, kindOf: kindOf || null };
           state.objectMarkers.add(model);
 
           const unit = new Unit(model, obj.name, kindOf);

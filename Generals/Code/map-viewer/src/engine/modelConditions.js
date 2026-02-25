@@ -1,5 +1,5 @@
 import { objectDrawStatesMap, findBestStateForFlags } from '../parsers/ini.js';
-import { loadW3DModel } from '../objects/loader.js';
+import { loadW3DModel, fixCpuSkinRefsAfterClone } from '../objects/loader.js';
 import { findW3DByModelName } from '../objects/index.js';
 import { isUnitAnimationComplete } from './animationRuntime.js';
 
@@ -12,6 +12,14 @@ function isAnimDebugEnabled() {
 function debug(unit, message) {
   if (!isAnimDebugEnabled() || !unit) return;
   console.log(`[W3D ANIM][${unit.id}:${unit.name}] ${message}`);
+}
+
+function isRebelTraceEnabled() {
+  return globalThis.__w3dRebelTrace !== false;
+}
+
+function isRebelTraceUnit(unit) {
+  return (unit?.name || '').toLowerCase() === 'glainfantryrebel';
 }
 
 function getPrimaryAnimationName(state) {
@@ -50,6 +58,16 @@ export function initUnitDrawState(unit) {
   unit.currentAnimationName = null;
   unit.currentAnimationMode = null;
   unit.currentAnimationFlags = new Set();
+
+  if (isRebelTraceEnabled() && isRebelTraceUnit(unit)) {
+    const sample = unit.drawStates.slice(0, 8).map(s => ({
+      type: s.type,
+      cond: [...(s.conditions || [])].join(' '),
+      model: s.model || '(inherit)',
+      anims: (s.animations || []).map(a => a.name).join(', ') || '(none)',
+    }));
+    console.log(`[W3D REBEL TRACE][${unit.id}:${unit.name}] parsed draw states`, sample);
+  }
 
   debug(
     unit,
@@ -118,6 +136,12 @@ function setResolvedState(unit, state, reason) {
     unit,
     `${reason}: state=${getStateTag(state)} anim=${unit.currentAnimationName || 'none'} mode=${unit.currentAnimationMode}`
   );
+  if (isRebelTraceEnabled() && isRebelTraceUnit(unit)) {
+    const animList = (state.animations || []).map(a => a.name).join(', ') || 'none';
+    console.log(
+      `[W3D REBEL TRACE][${unit.id}:${unit.name}] ${reason} state=${getStateTag(state)} model=${state.model || '(inherit)'} anims=${animList}`
+    );
+  }
 
   if (state.model) {
     const nextW3DPath = findW3DByModelName(state.model);
@@ -137,6 +161,7 @@ function setResolvedState(unit, state, reason) {
 function swapUnitModel(unit, template, w3dPath, modelName) {
   const oldMesh = unit.mesh;
   const newMesh = template.clone();
+  fixCpuSkinRefsAfterClone(newMesh);
 
   newMesh.position.copy(oldMesh.position);
   newMesh.rotation.copy(oldMesh.rotation);

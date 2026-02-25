@@ -179,6 +179,14 @@ function parseObjectINI(text) {
 // Simple fields → all tokens already consumed; line is done.
 // ---------------------------------------------------------------------------
 function parseObjectBlock(objectName, nextLine) {
+  // Generals object definitions are overrideable by later INI loads.
+  // Reset per-object extracted data before parsing this block so the
+  // latest definition wins instead of accumulating stale states.
+  objectModelMap.delete(objectName);
+  objectKindOfMap.delete(objectName);
+  objectGeometryMap.delete(objectName);
+  objectDrawStatesMap.delete(objectName);
+
   let geom = null;
   let line;
 
