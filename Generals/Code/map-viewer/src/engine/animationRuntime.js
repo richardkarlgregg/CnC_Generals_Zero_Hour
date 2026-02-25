@@ -26,7 +26,6 @@ function getOrCreateAnimator(unit) {
     });
     if (bonesByPivot.size === 0) {
       unit._animator = null;
-      console.warn(`[W3D ANIM][${unit.id}:${unit.name}] no bones found on mesh for animation runtime`);
       return null;
     }
     unit._animator = {
@@ -40,6 +39,16 @@ function getOrCreateAnimator(unit) {
     };
   }
   return unit._animator;
+}
+
+function hasCpuSkinMeshes(unit) {
+  if (!unit?.mesh) return false;
+  let found = false;
+  unit.mesh.traverse(node => {
+    if (found) return;
+    if (node?.isMesh && node.userData?.cpuSkin) found = true;
+  });
+  return found;
 }
 
 function sampleChannelAtFrame(channel, frame) {
@@ -122,7 +131,25 @@ function updateFrameCursor(animator, dt, clip, mode, randomStart) {
   }
 }
 
+function applyBindPoseToAnimator(animator) {
+  if (!animator || !animator.bonesByPivot) return;
+  for (const [pivot, bone] of animator.bonesByPivot) {
+    if (pivot === 0) continue;
+    if (!bone.userData.bindPosition) {
+      bone.userData.bindPosition = bone.position.clone();
+    }
+    if (!bone.userData.bindQuaternion) {
+      bone.userData.bindQuaternion = bone.quaternion.clone();
+    }
+    bone.position.copy(bone.userData.bindPosition);
+    bone.quaternion.copy(bone.userData.bindQuaternion);
+  }
+}
+
 export function updateUnitAnimation(unit, dt) {
+  // Skip non-skinned objects entirely (props/most map decorations).
+  if (!hasCpuSkinMeshes(unit)) return;
+
   const animator = getOrCreateAnimator(unit);
   if (!animator) return;
 
@@ -132,17 +159,23 @@ export function updateUnitAnimation(unit, dt) {
   }
 
   const clipKey = unit.currentAnimationName ? unit.currentAnimationName.toLowerCase() : null;
-  if (!clipKey) return;
+  if (!clipKey) {
+    applyBindPoseToAnimator(animator);
+    applyCpuSkin(unit, animator);
+    return;
+  }
 
   if (animator.clipKey !== clipKey) {
     animator.clipKey = clipKey;
-    animator.clip = loadW3DAnimationClip(clipKey);
+    animator.clip = loadW3DAnimationClip(clipKey, unit.mesh?.userData?.w3d || null);
     animator.initialized = false;
     animator.completed = false;
     debug(unit, `clip switch token=${clipKey} resolved=${!!animator.clip}`);
   }
   if (!animator.clip) {
     console.warn(`[W3D ANIM][${unit.id}:${unit.name}] clip missing for token ${clipKey}`);
+    applyBindPoseToAnimator(animator);
+    applyCpuSkin(unit, animator);
     return;
   }
 

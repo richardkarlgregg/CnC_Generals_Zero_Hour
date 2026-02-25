@@ -1,4 +1,4 @@
-import { bigFilePool } from '../parsers/big.js';
+import { bigFilePool, getFileFromPool } from '../parsers/big.js';
 import { objectModelMap } from '../parsers/ini.js';
 
 export const w3dFileIndex = new Map();
@@ -6,11 +6,21 @@ export const w3dLookupCache = new Map();
 
 export function buildW3DIndex() {
   w3dFileIndex.clear();
+  w3dLookupCache.clear();
   for (const [path] of bigFilePool) {
     if (!path.endsWith('.w3d')) continue;
     const parts = path.split('/');
     const basename = parts[parts.length - 1].replace(/\.w3d$/, '');
-    if (!w3dFileIndex.has(basename)) {
+    const existing = w3dFileIndex.get(basename);
+    if (!existing) {
+      w3dFileIndex.set(basename, path);
+      continue;
+    }
+
+    // Keep stable-first mapping, but prefer canonical art/w3d entries.
+    const existingIsArtW3D = existing.startsWith('art/w3d/');
+    const candidateIsArtW3D = path.startsWith('art/w3d/');
+    if (!existingIsArtW3D && candidateIsArtW3D) {
       w3dFileIndex.set(basename, path);
     }
   }
@@ -18,7 +28,22 @@ export function buildW3DIndex() {
 }
 
 function tryIndex(name) {
-  return w3dFileIndex.has(name) ? w3dFileIndex.get(name) : null;
+  if (!name) return null;
+  const base = name.toLowerCase().replace(/\.w3d$/, '');
+  const normalizedBase = base.replace(/\s+/g, '');
+
+  // Match Generals lookup behavior first: Art/W3D/<name>.w3d
+  const canonical = `art/w3d/${normalizedBase}.w3d`;
+  if (getFileFromPool(canonical)) return canonical;
+
+  // Also support localized W3D path style: Data/<lang>/Art/W3D/<name>.w3d
+  const localizedSuffix = `/art/w3d/${normalizedBase}.w3d`;
+  for (const [path] of bigFilePool) {
+    if (path.endsWith(localizedSuffix) && path.startsWith('data/')) return path;
+  }
+
+  if (w3dFileIndex.has(normalizedBase)) return w3dFileIndex.get(normalizedBase);
+  return w3dFileIndex.has(base) ? w3dFileIndex.get(base) : null;
 }
 
 function stripTrailingDigits(s) {

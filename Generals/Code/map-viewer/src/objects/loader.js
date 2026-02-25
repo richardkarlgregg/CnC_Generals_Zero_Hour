@@ -12,6 +12,28 @@ export const w3dTextureCache = new Map();
 export const w3dAnimFileCache = new Map();
 export const w3dAnimClipCache = new Map();
 
+function normalizeW3DPath(path) {
+  return (path || '').toLowerCase().replace(/\\/g, '/');
+}
+
+function resolveW3DPathByName(baseName, preferredSourcePath = null) {
+  const name = (baseName || '').toLowerCase().replace(/\.w3d$/, '');
+  if (!name) return null;
+
+  // Prefer sibling file in the same directory as the source model/anim.
+  if (preferredSourcePath) {
+    const src = normalizeW3DPath(preferredSourcePath);
+    const slash = src.lastIndexOf('/');
+    if (slash >= 0) {
+      const sibling = `${src.slice(0, slash + 1)}${name}.w3d`;
+      if (getFileFromPool(sibling)) return sibling;
+    }
+  }
+
+  // Fallback to basename index.
+  return w3dFileIndex.get(name) || null;
+}
+
 function w3dMeshToThreeJS(w3dMesh) {
   if (!w3dMesh.vertices || !w3dMesh.triangles) return null;
 
@@ -117,7 +139,7 @@ function loadW3DTextureLuminanceAlpha(name) {
 }
 
 export function loadW3DModel(w3dPath) {
-  const key = w3dPath.toLowerCase();
+  const key = normalizeW3DPath(w3dPath);
   if (w3dModelCache.has(key)) return w3dModelCache.get(key);
 
   const entry = getFileFromPool(w3dPath);
@@ -129,7 +151,7 @@ export function loadW3DModel(w3dPath) {
 
     if (!w3d.hierarchy && w3d.hlod && w3d.hlod.hierarchy) {
       const skelName = w3d.hlod.hierarchy.toLowerCase();
-      const skelPath = w3dFileIndex.get(skelName);
+      const skelPath = resolveW3DPathByName(skelName, w3dPath);
       if (skelPath) {
         const skelEntry = getFileFromPool(skelPath);
         if (skelEntry) {
@@ -264,7 +286,7 @@ function splitAnimToken(token) {
 }
 
 function loadAnimationFile(path) {
-  const key = path.toLowerCase();
+  const key = normalizeW3DPath(path);
   if (w3dAnimFileCache.has(key)) return w3dAnimFileCache.get(key);
 
   const entry = getFileFromPool(path);
@@ -284,10 +306,11 @@ function loadAnimationFile(path) {
   }
 }
 
-export function loadW3DAnimationClip(token) {
+export function loadW3DAnimationClip(token, preferredSourcePath = null) {
   const normalized = (token || '').toLowerCase();
   if (!normalized) return null;
-  if (w3dAnimClipCache.has(normalized)) return w3dAnimClipCache.get(normalized);
+  const cacheKey = preferredSourcePath ? `${normalized}|${normalizeW3DPath(preferredSourcePath)}` : normalized;
+  if (w3dAnimClipCache.has(cacheKey)) return w3dAnimClipCache.get(cacheKey);
 
   const { fileHint, clipName } = splitAnimToken(normalized);
   const candidateBases = [];
@@ -298,7 +321,7 @@ export function loadW3DAnimationClip(token) {
   let resolvedFrom = null;
 
   for (const base of candidateBases) {
-    const path = w3dFileIndex.get(base);
+    const path = resolveW3DPathByName(base, preferredSourcePath);
     if (!path) continue;
     const parsed = loadAnimationFile(path);
     if (!parsed || !parsed.animations || parsed.animations.length === 0) continue;
@@ -318,7 +341,7 @@ export function loadW3DAnimationClip(token) {
   }
 
   if (!resolvedClip) {
-    w3dAnimClipCache.set(normalized, null);
+    w3dAnimClipCache.set(cacheKey, null);
     return null;
   }
 
@@ -328,6 +351,6 @@ export function loadW3DAnimationClip(token) {
     );
   }
 
-  w3dAnimClipCache.set(normalized, resolvedClip);
+  w3dAnimClipCache.set(cacheKey, resolvedClip);
   return resolvedClip;
 }
