@@ -312,10 +312,13 @@ function parseAnimationEntry(values, isIdle) {
   const animName = (values[0] || '').toLowerCase();
   if (!animName || animName === 'none') return null;
   const distanceCovered = Number.parseFloat(values[1] || '0');
+  // Third token is timesToRepeat — used to weight idle anim pool (mirrors W3DModelDraw.cpp parseAnimation)
+  const timesToRepeat = Math.max(1, parseInt(values[2] || '1', 10) || 1);
   return {
     name: animName,
     isIdle,
     distanceCovered: Number.isFinite(distanceCovered) ? distanceCovered : 0,
+    timesToRepeat,
   };
 }
 
@@ -474,7 +477,10 @@ function parseConditionStateBlock(type, headerValues, nextLine) {
     }
     if (field === 'animation' || field === 'idleanimation') {
       const anim = parseAnimationEntry(values, field === 'idleanimation');
-      if (anim) state.animations.push(anim);
+      if (anim) {
+        // Expand timesToRepeat copies into the pool (mirrors W3DModelDraw parseAnimation weighting)
+        for (let i = 0; i < anim.timesToRepeat; i++) state.animations.push(anim);
+      }
       continue;
     }
     if (field === 'animationmode') {

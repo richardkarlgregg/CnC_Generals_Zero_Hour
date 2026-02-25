@@ -22,9 +22,32 @@ function isRebelTraceUnit(unit) {
   return (unit?.name || '').toLowerCase() === 'glainfantryrebel';
 }
 
-function getPrimaryAnimationName(state) {
-  if (!state || !state.animations || state.animations.length === 0) return null;
-  return state.animations[0].name;
+// Mirrors W3DModelDraw::adjustAnimation — randomly selects an animation from the state's pool.
+// When isIdleCycle=true (same state, idle completed) it avoids repeating the current index.
+function selectAnimationForState(unit, state, isIdleCycle = false) {
+  const anims = state?.animations;
+  if (!anims || anims.length === 0) {
+    unit.whichAnimInCurState = -1;
+    return null;
+  }
+  if (anims.length === 1) {
+    unit.whichAnimInCurState = 0;
+  } else if (isIdleCycle) {
+    const avoid = unit.whichAnimInCurState >= 0 ? unit.whichAnimInCurState : -1;
+    let next = avoid;
+    while (next === avoid) next = Math.floor(Math.random() * anims.length);
+    unit.whichAnimInCurState = next;
+  } else {
+    unit.whichAnimInCurState = Math.floor(Math.random() * anims.length);
+  }
+  return anims[unit.whichAnimInCurState].name;
+}
+
+function advanceIdleAnimation(unit) {
+  const state = unit.currentDrawState;
+  const animName = selectAnimationForState(unit, state, true);
+  unit.currentAnimationName = animName;
+  debug(unit, `idle cycle -> ${animName || 'none'} (pool index ${unit.whichAnimInCurState})`);
 }
 
 function getStateTag(state) {
@@ -58,6 +81,7 @@ export function initUnitDrawState(unit) {
   unit.currentAnimationName = null;
   unit.currentAnimationMode = null;
   unit.currentAnimationFlags = new Set();
+  unit.whichAnimInCurState = -1;
 
   if (isRebelTraceEnabled() && isRebelTraceUnit(unit)) {
     const sample = unit.drawStates.slice(0, 8).map(s => ({
@@ -94,6 +118,22 @@ export function updateUnitDrawState(unit) {
   }
 
   applyDrawState(unit, false);
+
+  // Idle animation cycling: mirrors W3DModelDraw::clientUpdateDrawModule.
+  // When a ONCE-mode idle animation completes, pick a different random idle from the same pool.
+  // "yes, that's right: pass curState for prevState" (W3DModelDraw.cpp ~2041)
+  if (
+    unit.currentDrawState &&
+    !unit.pendingDrawState &&
+    unit.whichAnimInCurState >= 0 &&
+    unit.currentAnimationMode === 'ONCE' &&
+    isUnitAnimationComplete(unit)
+  ) {
+    const anims = unit.currentDrawState.animations;
+    if (anims?.length > 0 && anims[unit.whichAnimInCurState]?.isIdle) {
+      advanceIdleAnimation(unit);
+    }
+  }
 }
 
 function applyDrawState(unit, force) {
@@ -128,7 +168,7 @@ function applyDrawState(unit, force) {
 
 function setResolvedState(unit, state, reason) {
   unit.currentDrawState = state;
-  unit.currentAnimationName = getPrimaryAnimationName(state);
+  unit.currentAnimationName = selectAnimationForState(unit, state, false);
   unit.currentAnimationMode = state.animationMode || 'LOOP';
   unit.currentAnimationFlags = state.flags || new Set();
 
