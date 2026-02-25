@@ -3,6 +3,7 @@ import { loadW3DAnimationClip } from '../objects/loader.js';
 
 const _tmpQuatA = new THREE.Quaternion();
 const _tmpQuatB = new THREE.Quaternion();
+const _tmpVec3 = new THREE.Vector3();
 const _loggedAnimatorInfo = new Set();
 const _loggedClipInfo = new Set();
 const _loggedRebelSkinInfo = new Set();
@@ -208,6 +209,16 @@ export function updateUnitAnimation(unit, dt) {
   if (isAnimDebugEnabled() && !_loggedClipInfo.has(`${unit.id}:${clipKey}`)) {
     _loggedClipInfo.add(`${unit.id}:${clipKey}`);
     debug(unit, `clip details: frames=${animator.clip.numFrames} fps=${animator.clip.frameRate} channels=${animator.clip.channels?.length || 0}`);
+    // Log which pivots have translation channels — critical for diagnosing BONE-GUN tracking.
+    // Always log when __w3dBoneDebug is set; otherwise only for rebel trace units.
+    if (globalThis.__w3dBoneDebug || isRebelTraceUnit(unit)) {
+      const tPivots = new Set(), qPivots = new Set();
+      for (const ch of (animator.clip.channels || [])) {
+        if (ch.kind === 'x' || ch.kind === 'y' || ch.kind === 'z') tPivots.add(ch.pivot);
+        else if (ch.kind === 'q') qPivots.add(ch.pivot);
+      }
+      console.log(`[CLIP PIVOTS][${unit.id}:${unit.name}] clip="${clipKey}" Q=[${[...qPivots].sort((a,b)=>a-b).join(',')}] T=[${[...tPivots].sort((a,b)=>a-b).join(',')}]`);
+    }
   }
 
   const stateFlags = unit.currentAnimationFlags || new Set();
@@ -234,6 +245,12 @@ export function updateUnitAnimation(unit, dt) {
     }
   }
 
+  // One-shot GUN DEBUG log – shows raw bindPos and animation delta for every BONE-GUN
+  // on the first frame, so we can verify whether trans stores a delta or absolute position.
+  const gunDebugKey = `gundbg:${unit.id}:${clipKey}`;
+  const doGunDebug = globalThis.__w3dBoneDebug && !_loggedClipInfo.has(gunDebugKey);
+  if (doGunDebug) _loggedClipInfo.add(gunDebugKey);
+
   for (const [pivot, bone] of animator.bonesByPivot) {
     if (pivot === 0) continue;
     if (!bone.userData.bindPosition) {
@@ -247,7 +264,11 @@ export function updateUnitAnimation(unit, dt) {
 
     const trans = translationByPivot.get(pivot);
     if (trans) {
-      bone.position.set(bindPos.x + trans[0], bindPos.y + trans[1], bindPos.z + trans[2]);
+      // W3D source (htree.cpp): Transform.Translate(animTrans) uses LOCAL space
+      // (Matrix3D::Translate does pos += currentRot * v), so animTrans is in
+      // bind-pose bone-local space. Rotate it by bindQuat before adding to bindPos.
+      _tmpVec3.set(trans[0], trans[1], trans[2]).applyQuaternion(bindQuat);
+      bone.position.set(bindPos.x + _tmpVec3.x, bindPos.y + _tmpVec3.y, bindPos.z + _tmpVec3.z);
     } else {
       bone.position.copy(bindPos);
     }
@@ -258,6 +279,18 @@ export function updateUnitAnimation(unit, dt) {
       bone.quaternion.copy(bindQuat).multiply(_tmpQuatA);
     } else {
       bone.quaternion.copy(bindQuat);
+    }
+
+    // Log bindPos and anim delta for BONE-GUN and nearby bones for comparison
+    if (doGunDebug && (bone.name?.toUpperCase().includes('BONE') || bone.name?.toUpperCase().includes('GUN') ||
+        bone.name?.toUpperCase().includes('HAND') || bone.name?.toUpperCase().includes('UPPERA'))) {
+      const bp = bindPos;
+      const t = trans;
+      const finalX = bp.x + (t ? t[0] : 0), finalY = bp.y + (t ? t[1] : 0), finalZ = bp.z + (t ? t[2] : 0);
+      const bpStr = `(${bp.x.toFixed(3)},${bp.y.toFixed(3)},${bp.z.toFixed(3)})`;
+      const tStr = t ? `(${t[0].toFixed(3)},${t[1].toFixed(3)},${t[2].toFixed(3)})` : 'NONE';
+      const fStr = `(${finalX.toFixed(3)},${finalY.toFixed(3)},${finalZ.toFixed(3)})`;
+      console.log(`[GUN DEBUG][${unit.id}:${unit.name}] pivot=${pivot} "${bone.name}" bindPos=${bpStr} trans=${tStr} => localPos=${fStr}`);
     }
   }
 
@@ -305,19 +338,52 @@ function applyCpuSkin(unit, animator) {
       deformByPivot[pivot] = Float32Array.from(_tmpMatB.elements);
     }
 
-    // ── one-shot diagnostic for rebel units ──────────────────────────────
+    // ── one-shot diagnostic for skinned units (rebels always; any unit when __w3dBoneDebug) ──
     const dumpKey = `${unit.id}:${node.name || node.uuid}`;
-    if (isRebelTraceEnabled() && isRebelTraceUnit(unit) && !_loggedSkinDump.has(dumpKey)) {
+    if ((isRebelTraceEnabled() && isRebelTraceUnit(unit) || globalThis.__w3dBoneDebug) && !_loggedSkinDump.has(dumpKey)) {
       _loggedSkinDump.add(dumpKey);
       console.group(`[SKIN DUMP][${unit.id}:${unit.name}] mesh="${node.name}" verts=${pos.count} pivots=${skin.usedPivots?.length}`);
       console.log('links type:', Array.isArray(links), 'len:', links?.length, 'first5:', links ? [...links].slice(0,5) : 'null');
       console.log('bindPos[0..2]:', skin.bindPositions[0]?.toFixed(3), skin.bindPositions[1]?.toFixed(3), skin.bindPositions[2]?.toFixed(3));
-      for (const pivot of (skin.usedPivots || []).slice(0, 5)) {
+      for (const pivot of (skin.usedPivots || [])) {
         const bone = animator.bonesByPivot.get(pivot);
         const wpos = bone ? new THREE.Vector3().setFromMatrixPosition(bone.matrixWorld) : null;
         const d = deformByPivot[pivot];
         const dx = d ? d[12].toFixed(3) : '?', dy = d ? d[13].toFixed(3) : '?', dz = d ? d[14].toFixed(3) : '?';
-        console.log(`  pivot=${pivot} bone="${bone?.name}" worldPos=(${wpos?.x.toFixed(2)},${wpos?.y.toFixed(2)},${wpos?.z.toFixed(2)}) deform.t=(${dx},${dy},${dz})`);
+        const isGun = bone?.name?.toLowerCase().includes('gun') || bone?.name?.toLowerCase().includes('muzzle');
+        const flag = isGun ? ' ◄ GUN' : '';
+        console.log(`  pivot=${pivot} bone="${bone?.name}" worldPos=(${wpos?.x.toFixed(2)},${wpos?.y.toFixed(2)},${wpos?.z.toFixed(2)}) deform.t=(${dx},${dy},${dz})${flag}`);
+
+        // For gun pivot: compute bind-space centroid and TRUE deformed centroid
+        // (deformed centroid uses deformMat * bindPos, NOT stale pos buffer)
+        if (isGun && d) {
+          const deformMat = _tmpMatC.fromArray(d);
+          let bx = 0, by = 0, bz = 0, cnt = 0;
+          let dcx = 0, dcy = 0, dcz = 0;
+          let minX = Infinity, maxX = -Infinity; // bind-local X range (gun extent along bone axis)
+          for (let vi = 0; vi < pos.count; vi++) {
+            if ((vi < links.length ? links[vi] : 0) !== pivot) continue;
+            const bi = vi * 3;
+            const bpx = skin.bindPositions[bi], bpy = skin.bindPositions[bi+1], bpz = skin.bindPositions[bi+2];
+            bx += bpx; by += bpy; bz += bpz;
+            if (bpx < minX) minX = bpx;
+            if (bpx > maxX) maxX = bpx;
+            _tmpVec.set(bpx, bpy, bpz).applyMatrix4(deformMat);
+            dcx += _tmpVec.x; dcy += _tmpVec.y; dcz += _tmpVec.z;
+            cnt++;
+          }
+          if (cnt > 0) {
+            const n = 1 / cnt;
+            console.log(`    GUN verts=${cnt} bindCentroid=(${(bx*n).toFixed(3)},${(by*n).toFixed(3)},${(bz*n).toFixed(3)}) bindLocalX=[${minX.toFixed(2)}..${maxX.toFixed(2)}]`);
+            console.log(`    GUN deformedCentroid=(${(dcx*n).toFixed(3)},${(dcy*n).toFixed(3)},${(dcz*n).toFixed(3)}) [mesh-local W3D space]`);
+            // Find R_HAND's deform.t for comparison
+            const rhand = [...(skin.usedPivots||[])].map(p => animator.bonesByPivot.get(p)).find(b => b?.name?.toUpperCase().includes('R HAND') || b?.name?.toUpperCase().includes('RHAND'));
+            if (rhand) {
+              const rhD = deformByPivot[rhand.userData?.pivotIndex];
+              if (rhD) console.log(`    R_HAND deform.t=(${rhD[12].toFixed(3)},${rhD[13].toFixed(3)},${rhD[14].toFixed(3)}) delta from gun ctr=(${((dcx*n)-rhD[12]).toFixed(3)},${((dcy*n)-rhD[13]).toFixed(3)},${((dcz*n)-rhD[14]).toFixed(3)})`);
+            }
+          }
+        }
       }
       console.groupEnd();
     }

@@ -205,6 +205,7 @@ export function fixCpuSkinRefsAfterClone(clonedGroup) {
       for (let j = 0; j < len; j++) arr[j] = skin.links[j] ?? 0;
       skin.links = arr;
     }
+
   });
 }
 
@@ -387,11 +388,31 @@ export function loadW3DModel(w3dPath) {
               } else {
                 innerGroup.add(aggMesh);
               }
+              if (globalThis.__w3dBoneDebug) {
+                const assignedBone = (boneIdx !== undefined && boneIdx < boneNodes.length)
+                  ? boneNodes[boneIdx].name : '(innerGroup)';
+                const verts = am.vertices;
+                const v0 = verts && verts.length >= 3
+                  ? `(${verts[0].toFixed(2)},${verts[1].toFixed(2)},${verts[2].toFixed(2)})` : 'N/A';
+                console.log(`[W3D AGG] ${key} agg="${agg.name}" mesh="${amname}" boneIdx=${boneIdx ?? 'NONE'} boneName="${assignedBone}" vert0=${v0} numVerts=${verts?.length/3|0}`);
+              }
               meshCount++;
             }
           }
-        } catch (e) { /* skip malformed aggregates */ }
+        } catch (e) {
+          if (globalThis.__w3dBoneDebug) console.warn(`[W3D AGG] ${key} agg="${agg.name}" LOAD ERROR:`, e);
+        }
       }
+    }
+
+    // Bone hierarchy + skinned-pivot dump for skeletal models
+    if (boneNodes.length > 0 && globalThis.__w3dBoneDebug) {
+      const lines = boneNodes.map((bn, i) => {
+        const parentName = bn.parent?.userData?.pivotIndex !== undefined
+          ? `${bn.parent.userData.pivotIndex}:${bn.parent.name}` : '(root)';
+        return `  [${i}] "${bn.name}" parent=${parentName}`;
+      });
+      console.log(`[W3D HIER] ${key} bones=${boneNodes.length}\n${lines.join('\n')}`);
     }
 
     const group = new THREE.Group();
