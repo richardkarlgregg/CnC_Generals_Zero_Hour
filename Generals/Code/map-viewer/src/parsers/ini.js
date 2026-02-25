@@ -4,6 +4,7 @@ import { DEFAULT_ROAD_SCALE } from '../constants.js';
 export const objectModelMap = new Map();
 export const objectKindOfMap = new Map();
 export const objectGeometryMap = new Map();
+export const objectDrawStatesMap = new Map();
 export const roadTypeMap = new Map();
 
 // ---------------------------------------------------------------------------
@@ -58,6 +59,7 @@ export function parseObjectINIsFromPool() {
   objectModelMap.clear();
   objectKindOfMap.clear();
   objectGeometryMap.clear();
+  objectDrawStatesMap.clear();
   const candidates = [];
   for (const [path] of bigFilePool) {
     if (path.endsWith('.ini')) {
@@ -273,7 +275,91 @@ function parseObjectBlock(objectName, nextLine) {
 //   Model                 → parseAsciiStringLC (single token, inside ConditionState only)
 //   All other fields      → simple single-line
 // ---------------------------------------------------------------------------
+const ANIM_MODE_DEFAULT = 'LOOP';
+const ACBIT_ALIASES = new Map([
+  ['RANDOMSTART', 'RANDOMIZE_START_FRAME'],
+]);
+
+function normalizeFlagToken(token) {
+  const upper = (token || '').toUpperCase();
+  return ACBIT_ALIASES.get(upper) || upper;
+}
+
+function getOrCreateDrawData(objectName) {
+  const key = objectName.toLowerCase();
+  let draw = objectDrawStatesMap.get(key);
+  if (!draw) {
+    draw = {
+      states: [],
+      transitions: new Map(),
+      ignoreConditionStates: new Set(),
+      defaultStateIndex: -1,
+    };
+    objectDrawStatesMap.set(key, draw);
+  }
+  return draw;
+}
+
+function parseAnimationEntry(values, isIdle) {
+  const animName = (values[0] || '').toLowerCase();
+  if (!animName || animName === 'none') return null;
+  const distanceCovered = Number.parseFloat(values[1] || '0');
+  return {
+    name: animName,
+    isIdle,
+    distanceCovered: Number.isFinite(distanceCovered) ? distanceCovered : 0,
+  };
+}
+
+function createEmptyConditionState(type) {
+  return {
+    type,
+    model: null,
+    animations: [],
+    animationMode: ANIM_MODE_DEFAULT,
+    transitionKey: null,
+    allowToFinishKey: null,
+    flags: new Set(),
+    conditions: new Set(),
+    aliases: [],
+    transitionFromKey: null,
+    transitionToKey: null,
+  };
+}
+
+function parseConditionHeaderState(type, values) {
+  const state = createEmptyConditionState(type);
+  if (type === 'DEFAULT') {
+    return state;
+  }
+  if (type === 'TRANSITION') {
+    state.transitionFromKey = (values[0] || '').toLowerCase();
+    state.transitionToKey = (values[1] || '').toLowerCase();
+    return state;
+  }
+  for (const v of values) {
+    if (!v) continue;
+    state.conditions.add(v.toUpperCase());
+  }
+  return state;
+}
+
+function parseAliasConditions(values) {
+  const out = new Set();
+  for (const v of values) {
+    if (!v) continue;
+    out.add(v.toUpperCase());
+  }
+  return out;
+}
+
 function parseW3DDrawBlock(objectName, nextLine) {
+  const drawData = getOrCreateDrawData(objectName);
+  const moduleStates = [];
+  const moduleTransitions = [];
+  const moduleIgnore = new Set();
+  let moduleDefaultStateIndex = -1;
+
   let line;
   while ((line = nextLine()) !== null) {
     const tokens = tokenize(line);
@@ -281,11 +367,42 @@ function parseW3DDrawBlock(objectName, nextLine) {
     const field = tokens[0].toLowerCase();
     const values = tokens.slice(1);
 
-    if (field === 'end') return;
+    if (field === 'end') break;
+
+    // Keep this parser compatible with W3DModelDraw::findBestInfo by masking ignored bits.
+    if (field === 'ignoreconditionstates') {
+      for (const token of values) {
+        if (!token) continue;
+        moduleIgnore.add(token.toUpperCase());
+      }
+      continue;
+    }
+
+    if (field === 'aliasconditionstate') {
+      if (moduleStates.length > 0) {
+        const alias = parseAliasConditions(values);
+        moduleStates[moduleStates.length - 1].aliases.push(alias);
+      }
+      continue;
+    }
 
     // ConditionState / TransitionState / DefaultConditionState — blocks with END
     if (DRAW_BLOCK_FIELDS.has(field)) {
-      parseConditionStateBlock(objectName, nextLine);
+      const type =
+        field === 'defaultconditionstate' ? 'DEFAULT' :
+        field === 'transitionstate' ? 'TRANSITION' :
+        'CONDITION';
+      const state = parseConditionStateBlock(type, values, nextLine);
+      if (state) {
+        if (type === 'DEFAULT') {
+          moduleDefaultStateIndex = moduleStates.length;
+        }
+        if (type === 'TRANSITION') {
+          moduleTransitions.push(state);
+        } else {
+          moduleStates.push(state);
+        }
+      }
       continue;
     }
 
@@ -296,6 +413,32 @@ function parseW3DDrawBlock(objectName, nextLine) {
 
     // AliasConditionState and all other Draw fields are single-line — skipped
   }
+
+  if (moduleStates.length === 0 && moduleTransitions.length === 0) {
+    return;
+  }
+
+  const firstStateIndex = drawData.states.length;
+  for (const s of moduleStates) {
+    if (s.type === 'DEFAULT' && s.conditions.size === 0) {
+      // Behaves like DefaultConditionState in Generals: default state matches NONE unless overridden.
+      s.conditions = new Set();
+    }
+    if (!objectModelMap.has(objectName) && s.model) {
+      objectModelMap.set(objectName, s.model);
+    }
+    drawData.states.push(s);
+  }
+  for (const t of moduleTransitions) {
+    const key = `${t.transitionFromKey}->${t.transitionToKey}`;
+    drawData.transitions.set(key, t);
+  }
+  for (const bit of moduleIgnore) {
+    drawData.ignoreConditionStates.add(bit);
+  }
+  if (moduleDefaultStateIndex >= 0 && drawData.defaultStateIndex < 0) {
+    drawData.defaultStateIndex = firstStateIndex + moduleDefaultStateIndex;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +448,8 @@ function parseW3DDrawBlock(objectName, nextLine) {
 // Key field: { "Model", parseAsciiStringLC, ... }
 // All fields in a ConditionState are simple single-line fields.
 // ---------------------------------------------------------------------------
-function parseConditionStateBlock(objectName, nextLine) {
+function parseConditionStateBlock(type, headerValues, nextLine) {
+  const state = parseConditionHeaderState(type, headerValues);
   let line;
   while ((line = nextLine()) !== null) {
     const tokens = tokenize(line);
@@ -313,13 +457,78 @@ function parseConditionStateBlock(objectName, nextLine) {
     const field = tokens[0].toLowerCase();
     const values = tokens.slice(1);
 
-    if (field === 'end') return;
+    if (field === 'end') return state;
 
     // Model/ModelName — parseAsciiStringLC (W3DModelDraw.cpp:1160-1165)
-    if ((field === 'model' || field === 'modelname') && values[0] && !objectModelMap.has(objectName)) {
-      objectModelMap.set(objectName, values[0].toLowerCase());
+    if ((field === 'model' || field === 'modelname') && values[0]) {
+      state.model = values[0].toLowerCase();
+      continue;
+    }
+    if (field === 'animation' || field === 'idleanimation') {
+      const anim = parseAnimationEntry(values, field === 'idleanimation');
+      if (anim) state.animations.push(anim);
+      continue;
+    }
+    if (field === 'animationmode') {
+      state.animationMode = (values[0] || ANIM_MODE_DEFAULT).toUpperCase();
+      continue;
+    }
+    if (field === 'transitionkey') {
+      state.transitionKey = (values[0] || '').toLowerCase() || null;
+      continue;
+    }
+    if (field === 'waitforstatetofinishifpossible') {
+      state.allowToFinishKey = (values[0] || '').toLowerCase() || null;
+      continue;
+    }
+    if (field === 'flags') {
+      for (const token of values) {
+        if (!token) continue;
+        state.flags.add(normalizeFlagToken(token));
+      }
     }
   }
+  return state;
+}
+
+function doesStateMatch(activeFlags, requiredFlags) {
+  for (const flag of requiredFlags) {
+    if (!activeFlags.has(flag)) return false;
+  }
+  return true;
+}
+
+export function findBestStateForFlags(states, activeFlags, ignoreFlags = null) {
+  if (!states || states.length === 0) return null;
+  const masked = new Set(activeFlags || []);
+  if (ignoreFlags) {
+    for (const ignored of ignoreFlags) masked.delete(ignored);
+  }
+
+  let best = null;
+  let bestScore = -1;
+  let bestIndex = Number.MAX_SAFE_INTEGER;
+
+  for (let i = 0; i < states.length; i++) {
+    const state = states[i];
+    if (!state || state.type === 'TRANSITION') continue;
+    const candidates = [state.conditions, ...state.aliases];
+    let localBest = -1;
+    for (const cond of candidates) {
+      if (!cond) continue;
+      if (!doesStateMatch(masked, cond)) continue;
+      const score = cond.size;
+      if (score > localBest) localBest = score;
+    }
+    if (localBest < 0) continue;
+    if (localBest > bestScore || (localBest === bestScore && i < bestIndex)) {
+      best = state;
+      bestScore = localBest;
+      bestIndex = i;
+    }
+  }
+
+  return best;
 }
 
 // ---------------------------------------------------------------------------

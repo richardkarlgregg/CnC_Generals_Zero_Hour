@@ -8,6 +8,7 @@ import { objectKindOfMap } from '../parsers/ini.js';
 import { getTerrainHeightAt } from '../terrain/update.js';
 import { updateLightMeshVisibility } from '../engine/lighting.js';
 import { Unit, resetUnitIdCounter } from '../engine/unit.js';
+import { initUnitDrawState } from '../engine/modelConditions.js';
 
 export function buildObjectMarkers(objects, fullW, fullH, border) {
   if (!objects || objects.length === 0) return;
@@ -57,6 +58,7 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
           state.objectMarkers.add(model);
 
           const unit = new Unit(model, obj.name, kindOf);
+          initUnitDrawState(unit);
           state.units.set(unit.id, unit);
 
           loadedCount++;
@@ -86,6 +88,7 @@ export function buildObjectMarkers(objects, fullW, fullH, border) {
       state.objectMarkers.add(marker);
 
       const unit = new Unit(marker, obj.name, kindOf);
+      initUnitDrawState(unit);
       state.units.set(unit.id, unit);
 
       fallbackCount++;

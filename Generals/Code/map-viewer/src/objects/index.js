@@ -113,3 +113,10 @@ export function findW3DForObject(objectName) {
   w3dLookupCache.set(lname, result);
   return result;
 }
+
+export function findW3DByModelName(modelName) {
+  if (!modelName) return null;
+  const lower = modelName.toLowerCase();
+  const base = lower.includes('.') ? lower.split('.')[0] : lower;
+  return tryIndex(base);
+}

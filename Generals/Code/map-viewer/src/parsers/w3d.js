@@ -26,6 +26,9 @@ export const W3D_CHUNK_HLOD_SUB_OBJECT_ARRAY_HEADER = 0x00000703;
 export const W3D_CHUNK_HLOD_SUB_OBJECT = 0x00000704;
 export const W3D_CHUNK_BOX            = 0x00000740;
 export const W3D_CHUNK_VERTEX_INFLUENCES = 0x0000000E;
+export const W3D_CHUNK_ANIMATION      = 0x00000200;
+export const W3D_CHUNK_ANIMATION_HEADER = 0x00000201;
+export const W3D_CHUNK_ANIMATION_CHANNEL = 0x00000202;
 
 export const W3D_CHUNK_PRELIT_UNLIT                  = 0x00002300;
 export const W3D_CHUNK_PRELIT_VERTEX                 = 0x00002301;
@@ -40,11 +43,17 @@ export const W3D_MESH_FLAG_GEOMETRY_TYPE_MASK = 0x00FF0000;
 export const W3D_MESH_FLAG_GEOMETRY_TYPE_SKIN = 0x00020000;
 export const W3D_MESH_FLAG_SKIN_LEGACY       = 0x00000002;
 
+export const ANIM_CHANNEL_X = 'x';
+export const ANIM_CHANNEL_Y = 'y';
+export const ANIM_CHANNEL_Z = 'z';
+export const ANIM_CHANNEL_Q = 'q';
+
 export function parseW3D(buffer) {
   const view = new DataView(buffer);
   const meshes = [];
   let hierarchy = null;
   let hlod = null;
+  const animations = [];
 
   function iterChunks(start, end, handler) {
     let pos = start;
@@ -254,6 +263,83 @@ export function parseW3D(buffer) {
     return hlod;
   }
 
+  function parseAnimChunk(start, end) {
+    const clip = {
+      name: '',
+      hierarchyName: '',
+      numFrames: 0,
+      frameRate: 30,
+      channels: [],
+    };
+
+    const rawChannels = [];
+    iterChunks(start, end, (id, dStart, _dEnd, size) => {
+      if (id === W3D_CHUNK_ANIMATION_HEADER && size >= 44) {
+        clip.name = readString(dStart + 4, 16).toLowerCase();
+        clip.hierarchyName = readString(dStart + 20, 16).toLowerCase();
+        clip.numFrames = view.getUint32(dStart + 36, true);
+        clip.frameRate = view.getUint32(dStart + 40, true);
+      } else if (id === W3D_CHUNK_ANIMATION_CHANNEL && size >= 12) {
+        const firstFrame = view.getUint16(dStart + 0, true);
+        const lastFrame = view.getUint16(dStart + 2, true);
+        const vectorLen = view.getUint16(dStart + 4, true);
+        const channelType = view.getUint16(dStart + 6, true);
+        const pivot = view.getUint16(dStart + 8, true);
+
+        const sampleCount = Math.max(0, lastFrame - firstFrame + 1);
+        const maxPossible = Math.floor((size - 12) / 4);
+        const valueCount = Math.min(sampleCount * vectorLen, maxPossible);
+        const data = new Float32Array(valueCount);
+        for (let i = 0; i < valueCount; i++) {
+          data[i] = view.getFloat32(dStart + 12 + i * 4, true);
+        }
+
+        rawChannels.push({
+          firstFrame,
+          lastFrame,
+          vectorLen,
+          pivot,
+          channelType,
+          data,
+        });
+      }
+    });
+
+    // Generals supports explicit channel types in W3D runtime. We use channelType when possible,
+    // and fall back to per-pivot scalar ordering (X,Y,Z) for broad asset compatibility.
+    const scalarByPivot = new Map();
+    for (const ch of rawChannels) {
+      let kind = null;
+      if (ch.vectorLen === 4) {
+        kind = ANIM_CHANNEL_Q;
+      } else if (ch.vectorLen === 1) {
+        if (ch.channelType === 0) kind = ANIM_CHANNEL_X;
+        else if (ch.channelType === 1) kind = ANIM_CHANNEL_Y;
+        else if (ch.channelType === 2) kind = ANIM_CHANNEL_Z;
+        else {
+          const idx = scalarByPivot.get(ch.pivot) || 0;
+          kind = idx === 0 ? ANIM_CHANNEL_X : idx === 1 ? ANIM_CHANNEL_Y : ANIM_CHANNEL_Z;
+          scalarByPivot.set(ch.pivot, idx + 1);
+        }
+      } else {
+        continue;
+      }
+
+      clip.channels.push({
+        kind,
+        firstFrame: ch.firstFrame,
+        lastFrame: ch.lastFrame,
+        pivot: ch.pivot,
+        vectorLen: ch.vectorLen,
+        data: ch.data,
+      });
+    }
+
+    if (clip.channels.length > 0 && clip.name) {
+      animations.push(clip);
+    }
+  }
+
   iterChunks(0, buffer.byteLength, (id, dStart, dEnd) => {
     if (id === W3D_CHUNK_MESH) {
       meshes.push(parseMeshChunk(dStart, dEnd));
@@ -261,8 +347,10 @@ export function parseW3D(buffer) {
       hierarchy = parseHierarchy(dStart, dEnd);
     } else if (id === W3D_CHUNK_HLOD) {
       hlod = parseHLod(dStart, dEnd);
+    } else if (id === W3D_CHUNK_ANIMATION) {
+      parseAnimChunk(dStart, dEnd);
     }
   });
 
-  return { meshes, hierarchy, hlod };
+  return { meshes, hierarchy, hlod, animations };
 }

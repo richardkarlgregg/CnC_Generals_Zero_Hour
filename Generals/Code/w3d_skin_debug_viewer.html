@@ -1,0 +1,852 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>W3D Skin Debug Viewer</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; color: #ddd; font: 13px/1.35 Arial, sans-serif; }
+    #root { display: grid; grid-template-columns: 360px 1fr; height: 100%; }
+    #ui { overflow: auto; padding: 10px; border-right: 1px solid #333; background: #181818; }
+    #view { position: relative; }
+    .row { margin: 7px 0; display: grid; grid-template-columns: 120px 1fr; gap: 8px; align-items: center; }
+    .row.full { grid-template-columns: 1fr; }
+    label { color: #aaa; }
+    select, input[type="file"], input[type="number"], button {
+      width: 100%; box-sizing: border-box; background: #232323; color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 6px;
+    }
+    input[type="range"] { width: 100%; }
+    button { cursor: pointer; }
+    button:hover { background: #2b2b2b; }
+    .sep { border-top: 1px solid #2f2f2f; margin: 10px 0; }
+    .chk { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .chk label { display: inline-flex; gap: 6px; align-items: center; }
+    #status { white-space: pre-wrap; font-family: Consolas, monospace; background: #101010; border: 1px solid #333; border-radius: 4px; padding: 8px; max-height: 180px; overflow: auto; }
+    #help { color: #8f8f8f; font-size: 12px; }
+    #canvasHost { position: absolute; inset: 0; }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="ui">
+      <div class="row full">
+        <label><b>Load W3D files</b> (SKN, SKL, optional anim clips)</label>
+        <input id="fileInput" type="file" accept=".w3d" multiple />
+      </div>
+
+      <div class="row"><label>Mesh file (SKN)</label><select id="meshSelect"></select></div>
+      <div class="row"><label>Skeleton file (SKL)</label><select id="sklSelect"></select></div>
+      <div class="row full"><button id="loadModelBtn">Load Model + Skeleton</button></div>
+
+      <div class="sep"></div>
+      <div class="row"><label>Animation file</label><select id="animFileSelect"></select></div>
+      <div class="row"><label>Animation clip</label><select id="clipSelect"></select></div>
+      <div class="row full"><button id="refreshClipsBtn">Refresh Clips From Anim File</button></div>
+
+      <div class="sep"></div>
+      <div class="row full chk">
+        <label><input id="showMeshChk" type="checkbox" checked />Show mesh</label>
+        <label><input id="showBonesChk" type="checkbox" checked />Show bones</label>
+        <label><input id="applySkinChk" type="checkbox" checked />Apply skinning</label>
+        <label><input id="playAnimChk" type="checkbox" />Play clip</label>
+        <label><input id="wireChk" type="checkbox" />Wireframe</label>
+      </div>
+      <div class="row">
+        <label>Skin mode</label>
+        <select id="skinModeSelect">
+          <option value="delta">Delta (current * inverseBind)</option>
+          <option value="boneSpace">Bone-space (current only)</option>
+        </select>
+      </div>
+
+      <div class="sep"></div>
+      <div class="row"><label>Manual bone</label><select id="boneSelect"></select></div>
+      <div class="row"><label>Rot X (deg)</label><input id="rx" type="range" min="-180" max="180" step="1" value="0"></div>
+      <div class="row"><label>Rot Y (deg)</label><input id="ry" type="range" min="-180" max="180" step="1" value="0"></div>
+      <div class="row"><label>Rot Z (deg)</label><input id="rz" type="range" min="-180" max="180" step="1" value="0"></div>
+      <div class="row"><label>Pos X</label><input id="tx" type="range" min="-5" max="5" step="0.01" value="0"></div>
+      <div class="row"><label>Pos Y</label><input id="ty" type="range" min="-5" max="5" step="0.01" value="0"></div>
+      <div class="row"><label>Pos Z</label><input id="tz" type="range" min="-5" max="5" step="0.01" value="0"></div>
+      <div class="row full"><button id="resetPoseBtn">Reset Manual Bone Offset</button></div>
+
+      <div class="sep"></div>
+      <div id="help">
+        Tip: set <b>Play clip</b> OFF and move one bone manually to inspect weight/influence behavior.<br/>
+        With <b>Apply skinning</b> OFF, you can compare base (bind) mesh vs deformed mesh.
+      </div>
+      <div class="row full"><div id="status"></div></div>
+    </div>
+    <div id="view"><div id="canvasHost"></div></div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./map-viewer/node_modules/three/build/three.module.js"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from "./map-viewer/node_modules/three/build/three.module.js";
+    import { OrbitControls } from "./map-viewer/node_modules/three/examples/jsm/controls/OrbitControls.js";
+    // ---------- W3D constants ----------
+    const CH_MESH = 0x00000000;
+    const CH_MESH_HEADER3 = 0x0000001F;
+    const CH_VERTICES = 0x00000002;
+    const CH_NORMALS = 0x00000003;
+    const CH_TRIANGLES = 0x00000020;
+    const CH_VERTEX_INFLUENCES = 0x0000000E;
+    const CH_TEXTURES = 0x00000030;
+    const CH_TEXTURE = 0x00000031;
+    const CH_TEXTURE_NAME = 0x00000032;
+    const CH_MATERIAL_PASS = 0x00000038;
+    const CH_STAGE_TEXCOORDS = 0x0000004A;
+
+    const CH_HIERARCHY = 0x00000100;
+    const CH_HIERARCHY_HEADER = 0x00000101;
+    const CH_PIVOTS = 0x00000102;
+
+    const CH_HLOD = 0x00000700;
+    const CH_HLOD_HEADER = 0x00000701;
+    const CH_HLOD_LOD_ARRAY = 0x00000702;
+    const CH_HLOD_SUB_OBJECT = 0x00000704;
+
+    const CH_ANIM = 0x00000200;
+    const CH_ANIM_HEADER = 0x00000201;
+    const CH_ANIM_CHANNEL = 0x00000202;
+
+    const W3D_MESH_FLAG_COLLISION_BOX = 0x00000001;
+    const W3D_MESH_FLAG_COLLISION_TYPE_MASK = 0x00000FF0;
+    const W3D_MESH_FLAG_HIDDEN = 0x00001000;
+    const W3D_MESH_FLAG_GEOMETRY_TYPE_MASK = 0x00FF0000;
+    const W3D_MESH_FLAG_GEOMETRY_TYPE_SKIN = 0x00020000;
+    const W3D_MESH_FLAG_SKIN_LEGACY = 0x00000002;
+
+    // ---------- App state ----------
+    const filesByName = new Map();      // lower filename -> File
+    const parsedByName = new Map();     // lower filename -> parsed w3d
+
+    let scene, camera, renderer, controls;
+    let worldRoot = null;
+    let skeletonRoot = null;
+    let skeletonHelper = null;
+    let modelGroup = null;
+    let bonesByPivot = new Map();
+    let skinnedMeshes = [];
+    let allMeshes = [];
+    let lastTime = performance.now();
+    let activeClip = null;
+    let clipTimeFrames = 0;
+
+    const _tmpQ1 = new THREE.Quaternion();
+    const _tmpQ2 = new THREE.Quaternion();
+    const _tmpM1 = new THREE.Matrix4();
+    const _tmpM2 = new THREE.Matrix4();
+    const _tmpM3 = new THREE.Matrix4();
+    const _tmpM3n = new THREE.Matrix3();
+    const _tmpV = new THREE.Vector3();
+    const _tmpN = new THREE.Vector3();
+
+    // ---------- UI ----------
+    const ui = {
+      fileInput: document.getElementById('fileInput'),
+      meshSelect: document.getElementById('meshSelect'),
+      sklSelect: document.getElementById('sklSelect'),
+      animFileSelect: document.getElementById('animFileSelect'),
+      clipSelect: document.getElementById('clipSelect'),
+      loadModelBtn: document.getElementById('loadModelBtn'),
+      refreshClipsBtn: document.getElementById('refreshClipsBtn'),
+      showMeshChk: document.getElementById('showMeshChk'),
+      showBonesChk: document.getElementById('showBonesChk'),
+      applySkinChk: document.getElementById('applySkinChk'),
+      playAnimChk: document.getElementById('playAnimChk'),
+      wireChk: document.getElementById('wireChk'),
+      skinModeSelect: document.getElementById('skinModeSelect'),
+      boneSelect: document.getElementById('boneSelect'),
+      rx: document.getElementById('rx'),
+      ry: document.getElementById('ry'),
+      rz: document.getElementById('rz'),
+      tx: document.getElementById('tx'),
+      ty: document.getElementById('ty'),
+      tz: document.getElementById('tz'),
+      resetPoseBtn: document.getElementById('resetPoseBtn'),
+      status: document.getElementById('status'),
+    };
+
+    function log(msg) {
+      ui.status.textContent = (msg + "\n" + ui.status.textContent).slice(0, 5000);
+    }
+
+    function iterChunks(view, start, end, fn) {
+      let pos = start;
+      while (pos + 8 <= end) {
+        const id = view.getUint32(pos, true);
+        const sizeRaw = view.getUint32(pos + 4, true);
+        const size = sizeRaw & 0x7fffffff;
+        const dStart = pos + 8;
+        const dEnd = Math.min(dStart + size, end);
+        fn(id, dStart, dEnd, size);
+        pos = dEnd;
+      }
+    }
+
+    function readFixedString(view, off, len) {
+      let s = "";
+      for (let i = 0; i < len; i++) {
+        const c = view.getUint8(off + i);
+        if (!c) break;
+        s += String.fromCharCode(c);
+      }
+      return s;
+    }
+
+    function parseW3D(arrayBuffer) {
+      const view = new DataView(arrayBuffer);
+      const meshes = [];
+      let hierarchy = null;
+      let hlod = null;
+      const animations = [];
+
+      function parseMesh(start, end) {
+        const mesh = {
+          name: "",
+          attrs: 0,
+          vertices: null,
+          normals: null,
+          triangles: null,
+          uvs: null,
+          textureNames: [],
+          numVerts: 0,
+          boneLinks: null,
+        };
+        iterChunks(view, start, end, (id, ds, de, size) => {
+          if (id === CH_MESH_HEADER3 && size >= 48) {
+            mesh.attrs = view.getUint32(ds + 4, true);
+            mesh.name = readFixedString(view, ds + 8, 16);
+            mesh.numVerts = view.getUint32(ds + 44, true);
+          } else if (id === CH_VERTICES) {
+            const c = Math.floor(size / 12);
+            mesh.vertices = new Float32Array(c * 3);
+            for (let i = 0; i < c; i++) {
+              mesh.vertices[i*3] = view.getFloat32(ds + i*12, true);
+              mesh.vertices[i*3+1] = view.getFloat32(ds + i*12 + 4, true);
+              mesh.vertices[i*3+2] = view.getFloat32(ds + i*12 + 8, true);
+            }
+          } else if (id === CH_NORMALS) {
+            const c = Math.floor(size / 12);
+            mesh.normals = new Float32Array(c * 3);
+            for (let i = 0; i < c; i++) {
+              mesh.normals[i*3] = view.getFloat32(ds + i*12, true);
+              mesh.normals[i*3+1] = view.getFloat32(ds + i*12 + 4, true);
+              mesh.normals[i*3+2] = view.getFloat32(ds + i*12 + 8, true);
+            }
+          } else if (id === CH_TRIANGLES) {
+            const c = Math.floor(size / 32);
+            mesh.triangles = new Uint32Array(c * 3);
+            for (let i = 0; i < c; i++) {
+              mesh.triangles[i*3] = view.getUint32(ds + i*32, true);
+              mesh.triangles[i*3+1] = view.getUint32(ds + i*32 + 4, true);
+              mesh.triangles[i*3+2] = view.getUint32(ds + i*32 + 8, true);
+            }
+          } else if (id === CH_VERTEX_INFLUENCES) {
+            const c = Math.floor(size / 8);
+            mesh.boneLinks = new Uint16Array(c);
+            for (let i = 0; i < c; i++) {
+              // For C&C Generals infantry assets this is the working pivot index field.
+              mesh.boneLinks[i] = view.getUint16(ds + i*8, true);
+            }
+          } else if (id === CH_TEXTURES) {
+            iterChunks(view, ds, de, (tid, ts, te, tsize) => {
+              if (tid === CH_TEXTURE) {
+                iterChunks(view, ts, te, (nid, ns, ne, nsize) => {
+                  if (nid === CH_TEXTURE_NAME) mesh.textureNames.push(readFixedString(view, ns, nsize));
+                });
+              }
+            });
+          } else if (id === CH_MATERIAL_PASS) {
+            iterChunks(view, ds, de, (sid, ss, se, ssize) => {
+              if (sid === CH_STAGE_TEXCOORDS && !mesh.uvs) {
+                const c = Math.floor(ssize / 8);
+                mesh.uvs = new Float32Array(c * 2);
+                for (let i = 0; i < c; i++) {
+                  mesh.uvs[i*2] = view.getFloat32(ss + i*8, true);
+                  mesh.uvs[i*2+1] = view.getFloat32(ss + i*8 + 4, true);
+                }
+              }
+            });
+          }
+        });
+        return mesh;
+      }
+
+      function parseHierarchy(start, end) {
+        const out = { name: "", pivots: [] };
+        iterChunks(view, start, end, (id, ds, de, size) => {
+          if (id === CH_HIERARCHY_HEADER) {
+            out.name = readFixedString(view, ds + 4, 16);
+          } else if (id === CH_PIVOTS) {
+            const c = Math.floor(size / 60);
+            for (let i = 0; i < c; i++) {
+              const o = ds + i*60;
+              out.pivots.push({
+                name: readFixedString(view, o + 0, 16),
+                parentIdx: view.getUint32(o + 16, true),
+                t: [view.getFloat32(o + 20, true), view.getFloat32(o + 24, true), view.getFloat32(o + 28, true)],
+                q: [view.getFloat32(o + 44, true), view.getFloat32(o + 48, true), view.getFloat32(o + 52, true), view.getFloat32(o + 56, true)],
+              });
+            }
+          }
+        });
+        return out;
+      }
+
+      function parseHLOD(start, end) {
+        const out = { name: "", hierarchy: "", lods: [] };
+        iterChunks(view, start, end, (id, ds, de) => {
+          if (id === CH_HLOD_HEADER) {
+            out.name = readFixedString(view, ds + 8, 16);
+            out.hierarchy = readFixedString(view, ds + 24, 16);
+          } else if (id === CH_HLOD_LOD_ARRAY) {
+            const sub = [];
+            iterChunks(view, ds, de, (sid, ss, se, ssize) => {
+              if (sid === CH_HLOD_SUB_OBJECT) {
+                sub.push({
+                  boneIdx: view.getUint32(ss, true),
+                  name: readFixedString(view, ss + 4, ssize - 4),
+                });
+              }
+            });
+            out.lods.push(sub);
+          }
+        });
+        return out;
+      }
+
+      function parseAnimation(start, end) {
+        const clip = { name: "", hierarchyName: "", numFrames: 0, frameRate: 30, channels: [] };
+        iterChunks(view, start, end, (id, ds, de, size) => {
+          if (id === CH_ANIM_HEADER && size >= 44) {
+            clip.name = readFixedString(view, ds + 4, 16).toLowerCase();
+            clip.hierarchyName = readFixedString(view, ds + 20, 16).toLowerCase();
+            clip.numFrames = view.getUint32(ds + 36, true);
+            clip.frameRate = view.getUint32(ds + 40, true);
+          } else if (id === CH_ANIM_CHANNEL && size >= 12) {
+            const first = view.getUint16(ds + 0, true);
+            const last = view.getUint16(ds + 2, true);
+            const vlen = view.getUint16(ds + 4, true);
+            const type = view.getUint16(ds + 6, true);
+            const pivot = view.getUint16(ds + 8, true);
+            const sampleCount = Math.max(0, last - first + 1);
+            const valCount = Math.min(sampleCount * vlen, Math.floor((size - 12) / 4));
+            const data = new Float32Array(valCount);
+            for (let i = 0; i < valCount; i++) data[i] = view.getFloat32(ds + 12 + i*4, true);
+            let kind = null;
+            if (vlen === 4) kind = "q";
+            else if (vlen === 1 && type === 0) kind = "x";
+            else if (vlen === 1 && type === 1) kind = "y";
+            else if (vlen === 1 && type === 2) kind = "z";
+            if (kind) clip.channels.push({ kind, first, last, vlen, pivot, data });
+          }
+        });
+        if (clip.name) animations.push(clip);
+      }
+
+      iterChunks(view, 0, arrayBuffer.byteLength, (id, ds, de) => {
+        if (id === CH_MESH) meshes.push(parseMesh(ds, de));
+        else if (id === CH_HIERARCHY) hierarchy = parseHierarchy(ds, de);
+        else if (id === CH_HLOD) hlod = parseHLOD(ds, de);
+        else if (id === CH_ANIM) parseAnimation(ds, de);
+      });
+
+      return { meshes, hierarchy, hlod, animations };
+    }
+
+    function resetSceneModel() {
+      if (worldRoot) {
+        scene.remove(worldRoot);
+      }
+      worldRoot = new THREE.Group();
+      scene.add(worldRoot);
+      skeletonRoot = null;
+      skeletonHelper = null;
+      modelGroup = null;
+      bonesByPivot = new Map();
+      skinnedMeshes = [];
+      allMeshes = [];
+      activeClip = null;
+      clipTimeFrames = 0;
+      ui.boneSelect.innerHTML = "";
+    }
+
+    function addSelectOption(sel, value, label) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      sel.appendChild(o);
+    }
+
+    function refreshFileSelects() {
+      for (const sel of [ui.meshSelect, ui.sklSelect, ui.animFileSelect]) sel.innerHTML = "";
+      addSelectOption(ui.meshSelect, "", "(choose)");
+      addSelectOption(ui.sklSelect, "", "(auto or choose)");
+      addSelectOption(ui.animFileSelect, "", "(none)");
+
+      const names = [...filesByName.keys()].sort();
+      for (const n of names) {
+        addSelectOption(ui.meshSelect, n, n);
+        addSelectOption(ui.sklSelect, n, n);
+        addSelectOption(ui.animFileSelect, n, n);
+      }
+    }
+
+    async function parseAndCache(nameLower) {
+      if (parsedByName.has(nameLower)) return parsedByName.get(nameLower);
+      const f = filesByName.get(nameLower);
+      if (!f) return null;
+      const buf = await f.arrayBuffer();
+      const parsed = parseW3D(buf);
+      parsedByName.set(nameLower, parsed);
+      return parsed;
+    }
+
+    async function buildModel() {
+      const meshName = ui.meshSelect.value;
+      if (!meshName) {
+        log("Pick a mesh .w3d first.");
+        return;
+      }
+      resetSceneModel();
+
+      const meshData = await parseAndCache(meshName);
+      if (!meshData || !meshData.meshes.length) {
+        log("Selected file has no mesh chunks.");
+        return;
+      }
+
+      let hierarchy = meshData.hierarchy;
+      let sklName = ui.sklSelect.value;
+      if (!hierarchy && meshData.hlod && meshData.hlod.hierarchy) {
+        const auto = (meshData.hlod.hierarchy + ".w3d").toLowerCase();
+        if (!sklName && filesByName.has(auto)) sklName = auto;
+      }
+      if (!hierarchy && sklName) {
+        const sklData = await parseAndCache(sklName);
+        if (sklData && sklData.hierarchy) hierarchy = sklData.hierarchy;
+      }
+
+      modelGroup = new THREE.Group();
+      modelGroup.name = "ModelRoot";
+      modelGroup.rotation.x = -Math.PI / 2; // keep parity with map-viewer orientation
+      worldRoot.add(modelGroup);
+
+      const meshPivotIdx = new Map();
+      if (meshData.hlod && meshData.hlod.lods.length) {
+        const lod0 = meshData.hlod.lods[meshData.hlod.lods.length - 1];
+        for (const sub of lod0) {
+          const parts = sub.name.toLowerCase().split(".");
+          const mname = parts.length > 1 ? parts[1] : parts[0];
+          meshPivotIdx.set(mname, sub.boneIdx);
+        }
+      }
+
+      if (hierarchy && hierarchy.pivots.length) {
+        skeletonRoot = new THREE.Group();
+        skeletonRoot.name = "SkeletonRoot";
+        modelGroup.add(skeletonRoot);
+
+        const bones = [];
+        for (let i = 0; i < hierarchy.pivots.length; i++) {
+          const p = hierarchy.pivots[i];
+          const b = new THREE.Bone();
+          b.name = p.name || ("pivot_" + i);
+          if (i > 0) {
+            b.position.set(p.t[0], p.t[1], p.t[2]);
+            b.quaternion.set(p.q[0], p.q[1], p.q[2], p.q[3]);
+          }
+          b.userData.pivotIndex = i;
+          b.userData.bindPosition = b.position.clone();
+          b.userData.bindQuaternion = b.quaternion.clone();
+          bones.push(b);
+          bonesByPivot.set(i, b);
+        }
+        for (let i = 0; i < bones.length; i++) {
+          const parent = hierarchy.pivots[i].parentIdx;
+          if (parent === 0xffffffff || parent >= bones.length) skeletonRoot.add(bones[i]);
+          else bones[parent].add(bones[i]);
+        }
+
+        skeletonHelper = new THREE.SkeletonHelper(skeletonRoot);
+        skeletonHelper.material.depthTest = false;
+        skeletonHelper.material.transparent = true;
+        skeletonHelper.material.opacity = 0.85;
+        worldRoot.add(skeletonHelper);
+
+        ui.boneSelect.innerHTML = "";
+        addSelectOption(ui.boneSelect, "", "(none)");
+        for (let i = 0; i < hierarchy.pivots.length; i++) {
+          const p = hierarchy.pivots[i];
+          addSelectOption(ui.boneSelect, String(i), `${i}: ${p.name}`);
+        }
+      }
+
+      for (const m of meshData.meshes) {
+        if (!m.vertices || !m.triangles) continue;
+        if (m.attrs & W3D_MESH_FLAG_HIDDEN) continue;
+        if (m.attrs & (W3D_MESH_FLAG_COLLISION_BOX | W3D_MESH_FLAG_COLLISION_TYPE_MASK)) continue;
+        const lname = m.name.toLowerCase();
+        if (lname.includes("shadow") || lname.includes("collision")) continue;
+
+        const g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.Float32BufferAttribute(m.vertices, 3));
+        if (m.normals) g.setAttribute("normal", new THREE.Float32BufferAttribute(m.normals, 3));
+        if (m.uvs) g.setAttribute("uv", new THREE.Float32BufferAttribute(m.uvs, 2));
+        g.setIndex(new THREE.BufferAttribute(m.triangles, 1));
+        if (!m.normals) g.computeVertexNormals();
+
+        const mat = new THREE.MeshStandardMaterial({ color: 0xbdbdbd, metalness: 0.0, roughness: 0.95 });
+        const mesh = new THREE.Mesh(g, mat);
+        mesh.name = m.name;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        allMeshes.push(mesh);
+
+        const isSkin = !!(m.boneLinks && m.boneLinks.length) &&
+          (((m.attrs & W3D_MESH_FLAG_GEOMETRY_TYPE_MASK) === W3D_MESH_FLAG_GEOMETRY_TYPE_SKIN) || (m.attrs & W3D_MESH_FLAG_SKIN_LEGACY));
+
+        if (isSkin && bonesByPivot.size) {
+          const posAttr = g.getAttribute("position");
+          const normAttr = g.getAttribute("normal");
+          const usedPivots = [...new Set(m.boneLinks)];
+          mesh.userData.cpuSkin = {
+            links: m.boneLinks,
+            usedPivots,
+            posAttr,
+            normAttr,
+            bindPositions: Float32Array.from(posAttr.array),
+            bindNormals: normAttr ? Float32Array.from(normAttr.array) : null,
+            bindBoneToMeshInv: [],
+          };
+          skinnedMeshes.push(mesh);
+          modelGroup.add(mesh);
+        } else {
+          const mapped = meshPivotIdx.get(lname);
+          if (Number.isInteger(mapped) && bonesByPivot.has(mapped)) bonesByPivot.get(mapped).add(mesh);
+          else modelGroup.add(mesh);
+        }
+      }
+
+      modelGroup.updateMatrixWorld(true);
+
+      // Capture inverse bind matrices per pivot in mesh-local space.
+      for (const mesh of skinnedMeshes) {
+        const skin = mesh.userData.cpuSkin;
+        const meshWorldInv = _tmpM1.copy(mesh.matrixWorld).invert();
+        for (const p of skin.usedPivots) {
+          const bone = bonesByPivot.get(p);
+          if (!bone) continue;
+          _tmpM2.multiplyMatrices(meshWorldInv, bone.matrixWorld);
+          _tmpM2.invert();
+          skin.bindBoneToMeshInv[p] = Float32Array.from(_tmpM2.elements);
+        }
+      }
+
+      const bCount = bonesByPivot.size;
+      log(`Loaded model: ${meshName}`);
+      log(`Meshes: ${allMeshes.length}, skinned meshes: ${skinnedMeshes.length}, bones: ${bCount}`);
+      if (meshData.hlod && meshData.hlod.hierarchy) log(`HLOD hierarchy ref: ${meshData.hlod.hierarchy}`);
+      if (!bCount) log("No hierarchy loaded: bone debug + skinning won't run.");
+
+      updateVisualToggles();
+      refreshClipSelectFromAnimFile();
+      frameToFit();
+    }
+
+    function updateVisualToggles() {
+      const showMesh = ui.showMeshChk.checked;
+      const bonesOnly = !showMesh;
+      for (const m of allMeshes) m.visible = !bonesOnly;
+      if (skeletonHelper) skeletonHelper.visible = ui.showBonesChk.checked;
+      for (const m of allMeshes) {
+        if (m.material) m.material.wireframe = ui.wireChk.checked;
+      }
+    }
+
+    function applyBindPose() {
+      for (const [i, b] of bonesByPivot) {
+        if (i === 0) continue;
+        if (b.userData.bindPosition) b.position.copy(b.userData.bindPosition);
+        if (b.userData.bindQuaternion) b.quaternion.copy(b.userData.bindQuaternion);
+      }
+    }
+
+    function sampleChannel(ch, frame) {
+      const f0 = Math.floor(frame);
+      let f1 = f0 + 1;
+      const t = frame - f0;
+      if (f1 > ch.last) f1 = ch.first;
+      function read(f) {
+        if (f < ch.first || f > ch.last) return ch.kind === "q" ? [0,0,0,1] : [0];
+        const idx = (f - ch.first) * ch.vlen;
+        const out = [];
+        for (let i = 0; i < ch.vlen; i++) out.push(ch.data[idx + i] ?? (ch.kind === "q" && i === 3 ? 1 : 0));
+        return out;
+      }
+      const a = read(f0);
+      if (!t) return a;
+      const b = read(f1);
+      if (ch.kind === "q") {
+        _tmpQ1.set(a[0], a[1], a[2], a[3]);
+        _tmpQ2.set(b[0], b[1], b[2], b[3]);
+        _tmpQ1.slerp(_tmpQ2, t);
+        return [_tmpQ1.x, _tmpQ1.y, _tmpQ1.z, _tmpQ1.w];
+      }
+      const o = new Array(ch.vlen);
+      for (let i = 0; i < ch.vlen; i++) o[i] = a[i] + (b[i] - a[i]) * t;
+      return o;
+    }
+
+    function applyClipPose(dtSec) {
+      if (!activeClip || !bonesByPivot.size) return;
+      const fps = activeClip.frameRate || 30;
+      const frameCount = Math.max(1, activeClip.numFrames || 1);
+      clipTimeFrames = (clipTimeFrames + fps * dtSec) % frameCount;
+
+      applyBindPose();
+
+      const tByPivot = new Map();
+      const qByPivot = new Map();
+      for (const ch of activeClip.channels) {
+        if (ch.pivot === 0) continue;
+        const s = sampleChannel(ch, clipTimeFrames);
+        if (ch.kind === "x" || ch.kind === "y" || ch.kind === "z") {
+          const t = tByPivot.get(ch.pivot) || [0,0,0];
+          if (ch.kind === "x") t[0] = s[0] || 0;
+          if (ch.kind === "y") t[1] = s[0] || 0;
+          if (ch.kind === "z") t[2] = s[0] || 0;
+          tByPivot.set(ch.pivot, t);
+        } else if (ch.kind === "q") {
+          qByPivot.set(ch.pivot, s);
+        }
+      }
+
+      for (const [pivot, bone] of bonesByPivot) {
+        if (pivot === 0) continue;
+        const bp = bone.userData.bindPosition || new THREE.Vector3();
+        const bq = bone.userData.bindQuaternion || new THREE.Quaternion();
+        const t = tByPivot.get(pivot);
+        if (t) bone.position.set(bp.x + t[0], bp.y + t[1], bp.z + t[2]);
+        else bone.position.copy(bp);
+        const q = qByPivot.get(pivot);
+        if (q) {
+          _tmpQ1.set(q[0], q[1], q[2], q[3]);
+          bone.quaternion.copy(bq).multiply(_tmpQ1);
+        } else {
+          bone.quaternion.copy(bq);
+        }
+      }
+    }
+
+    function applyManualBoneOffset() {
+      applyBindPose();
+      const sel = ui.boneSelect.value;
+      if (!sel) return;
+      const pivot = Number(sel);
+      const bone = bonesByPivot.get(pivot);
+      if (!bone) return;
+      const bp = bone.userData.bindPosition || new THREE.Vector3();
+      const bq = bone.userData.bindQuaternion || new THREE.Quaternion();
+
+      const tx = Number(ui.tx.value), ty = Number(ui.ty.value), tz = Number(ui.tz.value);
+      const rx = Number(ui.rx.value) * Math.PI / 180;
+      const ry = Number(ui.ry.value) * Math.PI / 180;
+      const rz = Number(ui.rz.value) * Math.PI / 180;
+
+      bone.position.set(bp.x + tx, bp.y + ty, bp.z + tz);
+      _tmpQ1.setFromEuler(new THREE.Euler(rx, ry, rz, "XYZ"));
+      bone.quaternion.copy(bq).multiply(_tmpQ1);
+    }
+
+    function resetSkinToBind(mesh) {
+      const skin = mesh.userData.cpuSkin;
+      if (!skin) return;
+      const pos = skin.posAttr;
+      const norm = skin.normAttr;
+      pos.array.set(skin.bindPositions);
+      pos.needsUpdate = true;
+      if (norm && skin.bindNormals) {
+        norm.array.set(skin.bindNormals);
+        norm.needsUpdate = true;
+      }
+    }
+
+    function applySkinning() {
+      const skinMode = ui.skinModeSelect.value;
+      for (const mesh of skinnedMeshes) {
+        const skin = mesh.userData.cpuSkin;
+        if (!skin) continue;
+        if (!ui.applySkinChk.checked) {
+          resetSkinToBind(mesh);
+          continue;
+        }
+
+        const meshWorldInv = _tmpM1.copy(mesh.matrixWorld).invert();
+        const deformByPivot = [];
+        for (const p of skin.usedPivots) {
+          const bone = bonesByPivot.get(p);
+          const bindInv = skin.bindBoneToMeshInv[p];
+          if (!bone) continue;
+          _tmpM2.multiplyMatrices(meshWorldInv, bone.matrixWorld);
+          if (skinMode === "delta") {
+            if (!bindInv) continue;
+            _tmpM3.fromArray(bindInv);
+            _tmpM2.multiply(_tmpM3);
+          }
+          deformByPivot[p] = Float32Array.from(_tmpM2.elements);
+        }
+
+        const pos = skin.posAttr;
+        const norm = skin.normAttr;
+        for (let i = 0; i < pos.count; i++) {
+          const p = i < skin.links.length ? skin.links[i] : 0;
+          const d = deformByPivot[p];
+          if (!d) continue;
+          _tmpM3.fromArray(d);
+          const bi = i * 3;
+          _tmpV.set(skin.bindPositions[bi], skin.bindPositions[bi+1], skin.bindPositions[bi+2]).applyMatrix4(_tmpM3);
+          pos.setXYZ(i, _tmpV.x, _tmpV.y, _tmpV.z);
+          if (norm && skin.bindNormals) {
+            _tmpM3n.getNormalMatrix(_tmpM3);
+            _tmpN.set(skin.bindNormals[bi], skin.bindNormals[bi+1], skin.bindNormals[bi+2]).applyMatrix3(_tmpM3n).normalize();
+            norm.setXYZ(i, _tmpN.x, _tmpN.y, _tmpN.z);
+          }
+        }
+        pos.needsUpdate = true;
+        if (norm) norm.needsUpdate = true;
+        mesh.geometry.computeBoundingSphere();
+      }
+    }
+
+    async function refreshClipSelectFromAnimFile() {
+      ui.clipSelect.innerHTML = "";
+      addSelectOption(ui.clipSelect, "", "(none)");
+      activeClip = null;
+      clipTimeFrames = 0;
+
+      const animName = ui.animFileSelect.value;
+      if (!animName) return;
+      const parsed = await parseAndCache(animName);
+      if (!parsed || !parsed.animations || !parsed.animations.length) {
+        log("Animation file has no animation chunks.");
+        return;
+      }
+      for (const c of parsed.animations) {
+        addSelectOption(ui.clipSelect, c.name, `${c.name} (${c.numFrames}f @ ${c.frameRate}fps)`);
+      }
+      log(`Clips loaded from ${animName}: ${parsed.animations.length}`);
+    }
+
+    async function updateActiveClipFromUI() {
+      const animName = ui.animFileSelect.value;
+      const clipName = ui.clipSelect.value;
+      activeClip = null;
+      clipTimeFrames = 0;
+      if (!animName || !clipName) return;
+      const parsed = await parseAndCache(animName);
+      if (!parsed) return;
+      activeClip = parsed.animations.find(c => c.name === clipName) || null;
+      if (activeClip) log(`Active clip: ${clipName}`);
+    }
+
+    function frameToFit() {
+      const box = new THREE.Box3().setFromObject(worldRoot);
+      if (!box.isEmpty()) {
+        const size = box.getSize(new THREE.Vector3()).length();
+        const center = box.getCenter(new THREE.Vector3());
+        controls.target.copy(center);
+        camera.position.copy(center).add(new THREE.Vector3(size * 0.5, size * 0.35, size * 0.7));
+        camera.near = Math.max(0.1, size / 2000);
+        camera.far = Math.max(1000, size * 20);
+        camera.updateProjectionMatrix();
+      }
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const now = performance.now();
+      const dt = Math.min((now - lastTime) / 1000, 0.05);
+      lastTime = now;
+
+      if (ui.playAnimChk.checked) applyClipPose(dt);
+      else applyManualBoneOffset();
+
+      if (modelGroup) modelGroup.updateMatrixWorld(true);
+      applySkinning();
+
+      if (skeletonHelper) skeletonHelper.visible = ui.showBonesChk.checked;
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    function initThree() {
+      const host = document.getElementById("canvasHost");
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setSize(host.clientWidth, host.clientHeight);
+      host.appendChild(renderer.domElement);
+
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x121212);
+
+      camera = new THREE.PerspectiveCamera(55, host.clientWidth / host.clientHeight, 0.1, 5000);
+      camera.position.set(30, 25, 45);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+
+      scene.add(new THREE.GridHelper(120, 24, 0x666666, 0x2a2a2a));
+      scene.add(new THREE.AxesHelper(6));
+      scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+      const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+      dir.position.set(20, 35, 15);
+      scene.add(dir);
+
+      resetSceneModel();
+
+      window.addEventListener("resize", () => {
+        const w = host.clientWidth, h = host.clientHeight;
+        renderer.setSize(w, h);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+      });
+    }
+
+    // ---------- Events ----------
+    ui.fileInput.addEventListener("change", async (e) => {
+      for (const f of e.target.files) {
+        if (!f.name.toLowerCase().endsWith(".w3d")) continue;
+        filesByName.set(f.name.toLowerCase(), f);
+      }
+      refreshFileSelects();
+      log(`Loaded files: ${filesByName.size}`);
+    });
+
+    ui.loadModelBtn.addEventListener("click", buildModel);
+    ui.refreshClipsBtn.addEventListener("click", refreshClipSelectFromAnimFile);
+    ui.animFileSelect.addEventListener("change", refreshClipSelectFromAnimFile);
+    ui.clipSelect.addEventListener("change", updateActiveClipFromUI);
+
+    for (const el of [ui.showMeshChk, ui.showBonesChk, ui.wireChk]) {
+      el.addEventListener("change", updateVisualToggles);
+    }
+
+    ui.resetPoseBtn.addEventListener("click", () => {
+      ui.rx.value = "0"; ui.ry.value = "0"; ui.rz.value = "0";
+      ui.tx.value = "0"; ui.ty.value = "0"; ui.tz.value = "0";
+    });
+
+    initThree();
+    animate();
+    log("W3D Skin Debug Viewer ready.");
+  </script>
+</body>
+</html>

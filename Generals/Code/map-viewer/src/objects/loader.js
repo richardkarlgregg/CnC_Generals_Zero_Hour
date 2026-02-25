@@ -9,6 +9,8 @@ import { w3dFileIndex } from './index.js';
 
 export const w3dModelCache = new Map();
 export const w3dTextureCache = new Map();
+export const w3dAnimFileCache = new Map();
+export const w3dAnimClipCache = new Map();
 
 function w3dMeshToThreeJS(w3dMesh) {
   if (!w3dMesh.vertices || !w3dMesh.triangles) return null;
@@ -152,13 +154,14 @@ export function loadW3DModel(w3dPath) {
     }
 
     const boneNodes = [];
+    const bonesByPivot = new Map();
     const innerGroup = new THREE.Group();
     innerGroup.rotation.x = -Math.PI / 2;
 
     if (w3d.hierarchy && w3d.hierarchy.pivots.length > 0) {
       for (let i = 0; i < w3d.hierarchy.pivots.length; i++) {
         const p = w3d.hierarchy.pivots[i];
-        const node = new THREE.Object3D();
+        const node = new THREE.Bone();
         node.name = p.name;
         if (i > 0) {
           node.position.set(p.translation[0], p.translation[1], p.translation[2]);
@@ -167,7 +170,12 @@ export function loadW3DModel(w3dPath) {
             node.quaternion.set(q[0], q[1], q[2], q[3]);
           }
         }
+        node.userData = node.userData || {};
+        node.userData.pivotIndex = i;
+        node.userData.bindPosition = node.position.clone();
+        node.userData.bindQuaternion = node.quaternion.clone();
         boneNodes.push(node);
+        bonesByPivot.set(i, node);
       }
       for (let i = 0; i < w3d.hierarchy.pivots.length; i++) {
         const parentIdx = w3d.hierarchy.pivots[i].parentIdx;
@@ -176,31 +184,6 @@ export function loadW3DModel(w3dPath) {
         } else {
           boneNodes[parentIdx].add(boneNodes[i]);
         }
-      }
-    }
-
-    const boneMats = [];
-    if (w3d.hierarchy) {
-      for (let i = 0; i < w3d.hierarchy.pivots.length; i++) {
-        const mat = new THREE.Matrix4();
-        if (i === 0) {
-          mat.identity();
-        } else {
-          const p = w3d.hierarchy.pivots[i];
-          const local = new THREE.Matrix4();
-          local.compose(
-            new THREE.Vector3(p.translation[0], p.translation[1], p.translation[2]),
-            new THREE.Quaternion(p.rotation[0], p.rotation[1], p.rotation[2], p.rotation[3]),
-            new THREE.Vector3(1, 1, 1)
-          );
-          const parentIdx = p.parentIdx;
-          if (parentIdx !== 0xFFFFFFFF && parentIdx < boneMats.length) {
-            mat.multiplyMatrices(boneMats[parentIdx], local);
-          } else {
-            mat.copy(local);
-          }
-        }
-        boneMats.push(mat);
       }
     }
 
@@ -214,28 +197,6 @@ export function loadW3DModel(w3dPath) {
       const isSkin = m.boneLinks && m.boneLinks.length > 0 &&
         ((m.attrs & W3D_MESH_FLAG_GEOMETRY_TYPE_MASK) === W3D_MESH_FLAG_GEOMETRY_TYPE_SKIN ||
          (m.attrs & W3D_MESH_FLAG_SKIN_LEGACY));
-      if (isSkin && boneMats.length > 0) {
-        const verts = m.vertices;
-        const norms = m.normals;
-        const links = m.boneLinks;
-        const tmpV = new THREE.Vector3();
-        const tmpN = new THREE.Vector3();
-        const normMat = new THREE.Matrix3();
-        for (let vi = 0; vi < links.length && vi * 3 + 2 < verts.length; vi++) {
-          const bi = links[vi];
-          if (bi < boneMats.length) {
-            tmpV.set(verts[vi*3], verts[vi*3+1], verts[vi*3+2]);
-            tmpV.applyMatrix4(boneMats[bi]);
-            verts[vi*3] = tmpV.x; verts[vi*3+1] = tmpV.y; verts[vi*3+2] = tmpV.z;
-            if (norms) {
-              normMat.getNormalMatrix(boneMats[bi]);
-              tmpN.set(norms[vi*3], norms[vi*3+1], norms[vi*3+2]);
-              tmpN.applyMatrix3(normMat).normalize();
-              norms[vi*3] = tmpN.x; norms[vi*3+1] = tmpN.y; norms[vi*3+2] = tmpN.z;
-            }
-          }
-        }
-      }
 
       const isLightMesh = mname.includes('light') || mname.includes('glow') ||
                           mname.includes('muzzle') || mname.includes('fxfire') ||
@@ -246,6 +207,22 @@ export function loadW3DModel(w3dPath) {
         mesh.receiveShadow = !isLightMesh;
         mesh.userData.isLightMesh = isLightMesh;
         if (isLightMesh) mesh.renderOrder = 100;
+
+        if (isSkin && bonesByPivot.size > 0) {
+          const posAttr = mesh.geometry.getAttribute('position');
+          const normAttr = mesh.geometry.getAttribute('normal');
+          if (posAttr) {
+            const usedPivots = Array.from(new Set(m.boneLinks));
+            mesh.userData.cpuSkin = {
+              posAttr,
+              normAttr: normAttr || null,
+              links: m.boneLinks,
+              usedPivots,
+              bindPositions: Float32Array.from(posAttr.array),
+              bindNormals: normAttr ? Float32Array.from(normAttr.array) : null,
+            };
+          }
+        }
 
         if (isSkin) {
           innerGroup.add(mesh);
@@ -263,6 +240,7 @@ export function loadW3DModel(w3dPath) {
 
     const group = new THREE.Group();
     group.add(innerGroup);
+    group.updateMatrixWorld(true);
 
     const result = meshCount > 0 ? group : null;
     w3dModelCache.set(key, result);
@@ -272,4 +250,84 @@ export function loadW3DModel(w3dPath) {
     w3dModelCache.set(key, null);
     return null;
   }
+}
+
+function splitAnimToken(token) {
+  const normalized = (token || '').toLowerCase().trim();
+  if (!normalized) return { fileHint: null, clipName: null };
+  const dot = normalized.indexOf('.');
+  if (dot < 0) return { fileHint: normalized, clipName: normalized };
+  return {
+    fileHint: normalized.slice(0, dot),
+    clipName: normalized.slice(dot + 1),
+  };
+}
+
+function loadAnimationFile(path) {
+  const key = path.toLowerCase();
+  if (w3dAnimFileCache.has(key)) return w3dAnimFileCache.get(key);
+
+  const entry = getFileFromPool(path);
+  if (!entry) {
+    w3dAnimFileCache.set(key, null);
+    return null;
+  }
+
+  try {
+    const parsed = parseW3D(entry.buffer.slice(entry.offset, entry.offset + entry.size));
+    w3dAnimFileCache.set(key, parsed);
+    return parsed;
+  } catch (e) {
+    console.warn('Failed to parse animation W3D:', path, e);
+    w3dAnimFileCache.set(key, null);
+    return null;
+  }
+}
+
+export function loadW3DAnimationClip(token) {
+  const normalized = (token || '').toLowerCase();
+  if (!normalized) return null;
+  if (w3dAnimClipCache.has(normalized)) return w3dAnimClipCache.get(normalized);
+
+  const { fileHint, clipName } = splitAnimToken(normalized);
+  const candidateBases = [];
+  if (fileHint) candidateBases.push(fileHint);
+  if (clipName && clipName !== fileHint) candidateBases.push(clipName);
+
+  let resolvedClip = null;
+  let resolvedFrom = null;
+
+  for (const base of candidateBases) {
+    const path = w3dFileIndex.get(base);
+    if (!path) continue;
+    const parsed = loadAnimationFile(path);
+    if (!parsed || !parsed.animations || parsed.animations.length === 0) continue;
+
+    let clip = parsed.animations.find(a => a.name === clipName) || null;
+    if (!clip && clipName) {
+      clip = parsed.animations.find(a => a.name.includes(clipName)) || null;
+    }
+    if (!clip) {
+      clip = parsed.animations[0];
+    }
+    if (clip) {
+      resolvedClip = clip;
+      resolvedFrom = path;
+      break;
+    }
+  }
+
+  if (!resolvedClip) {
+    w3dAnimClipCache.set(normalized, null);
+    return null;
+  }
+
+  if (globalThis.__w3dAnimDebug !== false) {
+    console.log(
+      `[W3D ANIM] clip "${normalized}" resolved via ${resolvedFrom} -> ${resolvedClip.name} (${resolvedClip.channels.length} channels)`
+    );
+  }
+
+  w3dAnimClipCache.set(normalized, resolvedClip);
+  return resolvedClip;
 }

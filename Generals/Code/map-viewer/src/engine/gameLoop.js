@@ -21,6 +21,8 @@ import { Pathfinder } from '../logic/pathfinder.js';
 import { AIUpdate, setPathfinderRef } from '../logic/aiUpdate.js';
 import { resolvePhysicsCollisions } from '../logic/locomotor.js';
 import { getTerrainHeightAtWorld } from '../terrain/update.js';
+import { updateUnitDrawState } from './modelConditions.js';
+import { updateUnitAnimation } from './animationRuntime.js';
 
 let initialized = false;
 let debugOverlay = null;
@@ -110,7 +112,13 @@ export function updateGameSystems(dt) {
   // 6. Update selection indicators to follow units
   updateSelectionIndicators();
 
-  // 7. Update path debug lines if overlay is visible
+  // 7. Update draw state + animation from current ModelCondition flags.
+  for (const unit of state.units.values()) {
+    updateUnitDrawState(unit);
+    updateUnitAnimation(unit, dt);
+  }
+
+  // 8. Update path debug lines if overlay is visible
   if (debugOverlay) updatePathDebugLines();
 }
 

@@ -16,7 +16,7 @@ import { roadTypeMap } from '../parsers/ini.js';
 import { buildW3DIndex, w3dFileIndex } from '../objects/index.js';
 import { parseObjectINIsFromPool } from '../parsers/ini.js';
 import { buildObjectMarkers } from '../objects/markers.js';
-import { w3dModelCache, w3dTextureCache } from '../objects/loader.js';
+import { w3dModelCache, w3dTextureCache, w3dAnimFileCache, w3dAnimClipCache } from '../objects/loader.js';
 import { w3dLookupCache } from '../objects/index.js';
 import { camState, CAM_DEFAULT_PITCH, CAM_MAX_HEIGHT } from '../engine/camera.js';
 import { ROAD_SEGMENT } from '../constants.js';
@@ -49,6 +49,8 @@ export function buildTerrain(mapData) {
   state.objectMarkers = new THREE.Group();
   w3dModelCache.clear();
   w3dTextureCache.clear();
+  w3dAnimFileCache.clear();
+  w3dAnimClipCache.clear();
   w3dLookupCache.clear();
   if (state.roadMesh) {
     scene.remove(state.roadMesh);
