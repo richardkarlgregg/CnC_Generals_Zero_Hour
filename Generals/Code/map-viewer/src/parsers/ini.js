@@ -333,6 +333,8 @@ function createEmptyConditionState(type) {
     flags: new Set(),
     conditions: new Set(),
     aliases: [],
+    hideSubObjects: [],
+    showSubObjects: [],
     transitionFromKey: null,
     transitionToKey: null,
   };
@@ -500,6 +502,15 @@ function parseConditionStateBlock(type, headerValues, nextLine) {
         if (!token) continue;
         state.flags.add(normalizeFlagToken(token));
       }
+    }
+    // HideSubObject / ShowSubObject — mirrors doHideShowSubObjs (W3DModelDraw.cpp)
+    if (field === 'hidesubobject' && values[0]) {
+      state.hideSubObjects.push(values[0].toLowerCase());
+      continue;
+    }
+    if (field === 'showsubobject' && values[0]) {
+      state.showSubObjects.push(values[0].toLowerCase());
+      continue;
     }
   }
   return state;

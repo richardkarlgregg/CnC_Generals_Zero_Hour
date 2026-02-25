@@ -237,13 +237,19 @@ export function loadW3DModel(w3dPath) {
       }
     }
 
+    // Build bone-index lookup from ALL LOD arrays (lods[0] = highest detail).
+    // Using all LODs ensures meshes that only appear in high-detail LODs (e.g. weapons)
+    // still get their correct bone assignment.  Earlier code used lods[last] which would
+    // miss weapon meshes in models that have multiple LODs (low-detail LOD strips the gun).
     const meshPivotIdx = new Map();
     if (w3d.hlod && w3d.hlod.lods.length > 0) {
-      const lod0 = w3d.hlod.lods[w3d.hlod.lods.length - 1];
-      for (const sub of lod0) {
-        const parts = sub.name.split('.');
-        const meshName = parts.length > 1 ? parts[1].toLowerCase() : parts[0].toLowerCase();
-        meshPivotIdx.set(meshName, sub.boneIdx);
+      // Iterate in reverse so that lods[0] (highest detail) takes final priority.
+      for (let li = w3d.hlod.lods.length - 1; li >= 0; li--) {
+        for (const sub of w3d.hlod.lods[li]) {
+          const parts = sub.name.split('.');
+          const meshName = parts.length > 1 ? parts[1].toLowerCase() : parts[0].toLowerCase();
+          meshPivotIdx.set(meshName, sub.boneIdx);
+        }
       }
     }
 
@@ -300,7 +306,14 @@ export function loadW3DModel(w3dPath) {
         mesh.castShadow = !isLightMesh && !mesh.userData.isPrelitUnlit;
         mesh.receiveShadow = !isLightMesh;
         mesh.userData.isLightMesh = isLightMesh;
-        if (isLightMesh) mesh.renderOrder = 100;
+        if (isLightMesh) {
+          mesh.renderOrder = 100;
+          // Muzzle flash / FX effect meshes are hidden by default and controlled per-state
+          // via HideSubObject/ShowSubObject INI directives (mirrors W3DModelDraw hideAllMuzzleFlashes)
+          if (mname.includes('muzzle') || mname.includes('fxfire') || mname.includes('beacon')) {
+            mesh.visible = false;
+          }
+        }
 
         if (isSkin && bonesByPivot.size > 0) {
           const posAttr = mesh.geometry.getAttribute('position');
@@ -330,8 +343,54 @@ export function loadW3DModel(w3dPath) {
           } else {
             innerGroup.add(mesh);
           }
+          // Debug: log non-skinned mesh bone assignments for skeletal models
+          if (boneNodes.length > 0 && globalThis.__w3dBoneDebug) {
+            const assignedIdx = meshPivotIdx.get(mname);
+            const boneName = assignedIdx !== undefined && assignedIdx < boneNodes.length
+              ? boneNodes[assignedIdx].name : '(innerGroup)';
+            const verts = m.vertices;
+            const v0 = verts ? `(${verts[0].toFixed(2)},${verts[1].toFixed(2)},${verts[2].toFixed(2)})` : 'N/A';
+            console.log(`[W3D BONE] ${key} mesh="${mname}" hlodBone=${assignedIdx ?? 'NONE'} boneName="${boneName}" vert0=${v0} numVerts=${m.vertices?.length/3|0}`);
+          }
         }
         meshCount++;
+      }
+    }
+
+    // Load HLOD aggregate sub-objects — these are separate .w3d files always attached to a bone
+    // regardless of LOD level (mirrors HLodClass constructor: Add_Sub_Object_To_Bone, hlod.cpp:1131)
+    if (w3d.hlod && w3d.hlod.aggregates && boneNodes.length > 0) {
+      for (const agg of w3d.hlod.aggregates) {
+        if (!agg.name) continue;
+        // aggregate name format is "HLODNAME.MODELNAME" — take the model name part
+        const parts = agg.name.split('.');
+        const aggModelName = (parts.length > 1 ? parts[1] : parts[0]).toLowerCase();
+        if (!aggModelName) continue;
+        const aggPath = resolveW3DPathByName(aggModelName, w3dPath);
+        if (!aggPath) continue;
+        const aggEntry = getFileFromPool(aggPath);
+        if (!aggEntry) continue;
+        try {
+          const aggW3D = parseW3D(aggEntry.buffer.slice(aggEntry.offset, aggEntry.offset + aggEntry.size));
+          for (const am of aggW3D.meshes) {
+            const amname = am.name.toLowerCase();
+            if (amname.includes('shadow') || amname.includes('collision')) continue;
+            if (am.attrs & W3D_MESH_FLAG_HIDDEN) continue;
+            if (am.attrs & (W3D_MESH_FLAG_COLLISION_BOX | W3D_MESH_FLAG_COLLISION_TYPE_MASK)) continue;
+            const aggMesh = w3dMeshToThreeJS(am);
+            if (aggMesh) {
+              aggMesh.castShadow = true;
+              aggMesh.receiveShadow = true;
+              const boneIdx = agg.boneIdx;
+              if (boneIdx !== undefined && boneIdx < boneNodes.length) {
+                boneNodes[boneIdx].add(aggMesh);
+              } else {
+                innerGroup.add(aggMesh);
+              }
+              meshCount++;
+            }
+          }
+        } catch (e) { /* skip malformed aggregates */ }
       }
     }
 

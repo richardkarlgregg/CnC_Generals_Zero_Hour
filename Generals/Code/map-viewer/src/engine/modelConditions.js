@@ -196,6 +196,24 @@ function setResolvedState(unit, state, reason) {
       }
     }
   }
+
+  // Apply HideSubObject / ShowSubObject — mirrors doHideShowSubObjs (W3DModelDraw.cpp)
+  applySubObjectVisibility(unit, state);
+}
+
+function applySubObjectVisibility(unit, state) {
+  if (!unit?.mesh) return;
+  const hideList = state.hideSubObjects;
+  const showList = state.showSubObjects;
+  if ((!hideList || hideList.length === 0) && (!showList || showList.length === 0)) return;
+  const hideSet = new Set(hideList || []);
+  const showSet = new Set(showList || []);
+  unit.mesh.traverse(node => {
+    if (!node.isMesh) return;
+    const name = (node.name || '').toLowerCase();
+    if (hideSet.has(name)) node.visible = false;
+    else if (showSet.has(name)) node.visible = true;
+  });
 }
 
 function swapUnitModel(unit, template, w3dPath, modelName) {

@@ -24,6 +24,7 @@ export const W3D_CHUNK_HLOD_HEADER    = 0x00000701;
 export const W3D_CHUNK_HLOD_LOD_ARRAY = 0x00000702;
 export const W3D_CHUNK_HLOD_SUB_OBJECT_ARRAY_HEADER = 0x00000703;
 export const W3D_CHUNK_HLOD_SUB_OBJECT = 0x00000704;
+export const W3D_CHUNK_HLOD_AGGREGATE_ARRAY = 0x00000705;
 export const W3D_CHUNK_BOX            = 0x00000740;
 export const W3D_CHUNK_VERTEX_INFLUENCES = 0x0000000E;
 export const W3D_CHUNK_ANIMATION      = 0x00000200;
@@ -241,23 +242,35 @@ export function parseW3D(buffer) {
     return hier;
   }
 
+  function parseHLodSubObjects(dStart, dEnd) {
+    const subObjects = [];
+    iterChunks(dStart, dEnd, (sid, sdStart, _sdEnd, ss) => {
+      if (sid === W3D_CHUNK_HLOD_SUB_OBJECT) {
+        subObjects.push({
+          boneIdx: view.getUint32(sdStart, true),
+          name: readString(sdStart + 4, ss - 4),
+        });
+      }
+    });
+    return subObjects;
+  }
+
   function parseHLod(start, end) {
-    const hlod = { name: '', hierarchy: '', lods: [] };
-    iterChunks(start, end, (id, dStart, dEnd, size) => {
+    // lods[0] = highest-detail LOD (first LOD_ARRAY chunk in the file)
+    // aggregates = always-on sub-objects regardless of LOD (separate model files)
+    const hlod = { name: '', hierarchy: '', lods: [], aggregates: [] };
+    iterChunks(start, end, (id, dStart, dEnd) => {
       if (id === W3D_CHUNK_HLOD_HEADER) {
         hlod.name = readString(dStart + 8, 16);
         hlod.hierarchy = readString(dStart + 24, 16);
       } else if (id === W3D_CHUNK_HLOD_LOD_ARRAY) {
-        const subObjects = [];
-        iterChunks(dStart, dEnd, (sid, sdStart, _sdEnd, ss) => {
-          if (sid === W3D_CHUNK_HLOD_SUB_OBJECT) {
-            subObjects.push({
-              boneIdx: view.getUint32(sdStart, true),
-              name: readString(sdStart + 4, ss - 4),
-            });
-          }
-        });
-        hlod.lods.push(subObjects);
+        hlod.lods.push(parseHLodSubObjects(dStart, dEnd));
+      } else if (id === W3D_CHUNK_HLOD_AGGREGATE_ARRAY) {
+        // Aggregates are separate model files attached to specific bones.
+        // Mirrors HLodDefClass loading: case W3D_CHUNK_HLOD_AGGREGATE_ARRAY (hlod.cpp:616)
+        for (const sub of parseHLodSubObjects(dStart, dEnd)) {
+          hlod.aggregates.push(sub);
+        }
       }
     });
     return hlod;
